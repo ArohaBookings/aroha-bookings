@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
+import { useTransition } from "react";
+import { saveAllSettings, type SaveResponse } from "./actions";
 
 /* ───────────────────────────────────────────────────────────────
    Types (aligned for future schemas.ts)
@@ -184,21 +186,21 @@ export default function SettingsPage() {
   });
 
   const activeStaff = useMemo(() => staff.filter((s) => s.active), [staff]);
-
+  const [isSaving, startSaving] = useTransition();
   /* Aggregate payload (ready for your zod + actions wiring) */
   function buildPayload() {
-    return {
-      business,
-      openingHours,
-      services,
-      staff,
-      roster,
-      bookingRules: rules,
-      notifications,
-      onlineBooking: online,
-      calendarPrefs,
-    };
-  }
+  return {
+    business,
+    openingHours,
+    services,     // ← added
+    staff,        // ← added
+    roster,       // ← added
+    bookingRules: rules,
+    notifications,
+    onlineBooking: online,
+    calendarPrefs,
+  };
+}
 
   return (
     <div className="p-6 space-y-10 text-black">
@@ -211,20 +213,34 @@ export default function SettingsPage() {
             online bookings and calendar preferences.
           </p>
         </div>
-        <div className="hidden sm:flex gap-2">
-          <button
-            className="rounded-md bg-black text-white px-4 py-2 text-sm hover:bg-black transition"
-            onClick={() => {
-              const payload = buildPayload();
-              // TODO: replace with server action post
-              // await saveSettings(payload)
-              console.log("Settings payload:", payload);
-              alert("Settings ready to save — check console. Wire to your server actions next.");
-            }}
-          >
-            Save changes
-          </button>
-        </div>
+     
+
+      <div className="hidden sm:flex gap-2">
+      <button
+       className="rounded-md bg-black text-white px-4 py-2 text-sm hover:bg-black transition disabled:opacity-60"
+       disabled={isSaving}
+       onClick={() => {
+        const payload = buildPayload();
+
+      startSaving(async () => {
+        // Cast payload and the returned shape to satisfy TS
+        const res = (await saveAllSettings(payload as any)) as {
+          ok: boolean;
+          error?: string;
+        };
+
+        alert(
+          res.ok
+            ? "Settings saved ✅"
+            : `Failed to save settings${res.error ? ` (${res.error})` : ""}`
+        );
+      });
+      }}
+     >
+      {isSaving ? "Saving…" : "Save changes"}
+       </button>
+       </div>
+
       </header>
 
       {/* Business */}

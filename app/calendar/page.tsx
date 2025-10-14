@@ -238,7 +238,7 @@ export async function cancelBooking(formData: FormData): Promise<{ ok: boolean; 
 export default async function CalendarPage({
   searchParams,
 }: {
-  searchParams: Promise<{ view?: ViewMode; date?: string; q?: string; staff?: string; tz?: "org" | "local" }>;
+  searchParams?: { view?: ViewMode; date?: string; q?: string; staff?: string; tz?: "org" | "local" };
 }) {
   // auth + org
   const sp = await searchParams;
@@ -248,8 +248,17 @@ export default async function CalendarPage({
     where: { email: session.user.email },
     include: { memberships: { include: { org: true } } },
   });
-  const org = user?.memberships[0]?.org as OrgRow | undefined;
-  if (!org) redirect("/onboarding");
+ const org = user?.memberships[0]?.org as OrgRow | undefined;
+if (!org) {
+  return (
+    <div className="p-6">
+      <h1 className="text-2xl font-semibold tracking-tight">Calendar</h1>
+      <p className="mt-2 text-sm text-zinc-600">
+        No organisation found. Create one on <a className="underline" href="/onboarding">onboarding</a>.
+      </p>
+    </div>
+  );
+}
 
   const view: ViewMode = sp?.view === "day" ? "day" : "week";
   const baseDate = parseDateParam(sp?.date);
@@ -591,8 +600,8 @@ const nextDate = addDays(baseDate, view === "day" ?  1 :  7);
                   }}
                 />
               ))}
-        </div> {/* end grid */}
-      </div> {/* end calendar shell */}
+        </div>
+      </div>
 
       {/* Empty state */}
       {staff.length === 0 && (
@@ -607,6 +616,6 @@ const nextDate = addDays(baseDate, view === "day" ?  1 :  7);
 
       {/* Edit modal mount point (client island portals into body) */}
       <EditBookingPortal staff={staff} services={services} timezone={activeTZ} />
-    </div> // end page wrapper
+    </div>
   );
 }

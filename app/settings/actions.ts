@@ -30,24 +30,32 @@ type StaffInput = {
   email?: string | null;
   active: boolean;
   colorHex?: string | null;
-  serviceIds?: string[]; // optional linking to services
+  serviceIds?: string[];
 };
-type ServiceInput = { name: string; durationMin: number; priceCents: number; colorHex?: string | null };
+type ServiceInput = {
+  name: string;
+  durationMin: number;
+  priceCents: number;
+  colorHex?: string | null;
+};
 type OpeningHoursRow = { weekday: number; openMin: number; closeMin: number; closed?: boolean };
 type RosterCell = { start: string; end: string };
 type Roster = Record<string, RosterCell[]>;
 
-type SettingsPayload = {
+export type SettingsPayload = {
   business: OrgInput & { address?: string; phone?: string; email?: string };
   openingHours: OpeningHoursRow[];
-  services: (ServiceInput & { id?: string })[];
-  staff: (StaffInput & { id?: string })[];
-  roster: Roster;
+  // The next three are optional so page.tsx can omit them for now
+  services?: (ServiceInput & { id?: string })[];
+  staff?: (StaffInput & { id?: string })[];
+  roster?: Roster;
   bookingRules: unknown;
   notifications: unknown;
   onlineBooking: unknown;
   calendarPrefs: unknown;
 };
+
+export type SaveResponse = { ok: boolean; error?: string };
 
 /* ───────────────────────────────────────────────────────────────
    ORG
@@ -76,13 +84,9 @@ export async function createStaff(input: StaffInput) {
     },
   });
 
-  // Optional: link to services
   if (input.serviceIds?.length) {
     await prisma.staffService.createMany({
-      data: input.serviceIds.map((serviceId) => ({
-        staffId: staff.id,
-        serviceId,
-      })),
+      data: input.serviceIds.map((serviceId) => ({ staffId: staff.id, serviceId })),
       skipDuplicates: true,
     });
   }
@@ -103,7 +107,6 @@ export async function updateStaff(id: string, input: StaffInput) {
     },
   });
 
-  // Keep service links in sync if provided
   if (Array.isArray(input.serviceIds)) {
     await prisma.$transaction([
       prisma.staffService.deleteMany({ where: { staffId: id } }),
@@ -122,10 +125,7 @@ export async function deleteStaff(id: string) {
   await prisma.$transaction([
     prisma.staffService.deleteMany({ where: { staffId: id } }),
     prisma.staffSchedule.deleteMany({ where: { staffId: id } }),
-    prisma.appointment.updateMany({
-      where: { staffId: id },
-      data: { staffId: null }, // preserve history
-    }),
+    prisma.appointment.updateMany({ where: { staffId: id }, data: { staffId: null } }),
     prisma.staffMember.delete({ where: { id } }),
   ]);
   return { ok: true as const };
@@ -166,10 +166,7 @@ export async function deleteService(id: string) {
   await requireOrg();
   await prisma.$transaction([
     prisma.staffService.deleteMany({ where: { serviceId: id } }),
-    prisma.appointment.updateMany({
-      where: { serviceId: id },
-      data: { serviceId: null }, // preserve history
-    }),
+    prisma.appointment.updateMany({ where: { serviceId: id }, data: { serviceId: null } }),
     prisma.service.delete({ where: { id } }),
   ]);
   return { ok: true as const };
@@ -177,12 +174,10 @@ export async function deleteService(id: string) {
 
 /* ───────────────────────────────────────────────────────────────
    OPENING HOURS
-   (replace-all pattern keeps it simple)
    ─────────────────────────────────────────────────────────────── */
 export async function saveOpeningHours(rows: OpeningHoursRow[]) {
   const org = await requireOrg();
 
-  // normalize: if closed => set 0..0
   const cleaned = rows.map((r) => ({
     weekday: r.weekday,
     openMin: r.closed ? 0 : r.openMin,
@@ -191,9 +186,7 @@ export async function saveOpeningHours(rows: OpeningHoursRow[]) {
 
   await prisma.$transaction([
     prisma.openingHours.deleteMany({ where: { orgId: org.id } }),
-    prisma.openingHours.createMany({
-      data: cleaned.map((r) => ({ orgId: org.id, ...r })),
-    }),
+    prisma.openingHours.createMany({ data: cleaned.map((r) => ({ orgId: org.id, ...r })) }),
   ]);
 
   return { ok: true as const };
@@ -201,32 +194,20 @@ export async function saveOpeningHours(rows: OpeningHoursRow[]) {
 
 /* ───────────────────────────────────────────────────────────────
    ROSTER → StaffSchedule
-   (optional, from settings roster grid)
    ─────────────────────────────────────────────────────────────── */
 export async function saveRoster(roster: Roster) {
   await requireOrg();
 
-  // ✅ Explicit Prisma promise array
   const tx: Prisma.PrismaPromise<unknown>[] = [];
 
   for (const [staffId, days] of Object.entries(roster)) {
-    // clear existing for this staff
     tx.push(prisma.staffSchedule.deleteMany({ where: { staffId } }));
-
-    // add new rows
     for (let i = 0; i < days.length; i++) {
       const cell = days[i];
-      const hasHours = Boolean(cell.start && cell.end);
-      if (!hasHours) continue;
-
+      if (!cell?.start || !cell?.end) continue;
       tx.push(
         prisma.staffSchedule.create({
-          data: {
-            staffId,
-            dayOfWeek: i,      // 0=Mon..6=Sun if that’s what your UI uses
-            startTime: cell.start,
-            endTime: cell.end,
-          },
+          data: { staffId, dayOfWeek: i, startTime: cell.start, endTime: cell.end },
         })
       );
     }
@@ -238,93 +219,88 @@ export async function saveRoster(roster: Roster) {
 
 /* ───────────────────────────────────────────────────────────────
    ALL SETTINGS (1-click Save)
-   - Stores the “big” JSON into Organization.dashboardConfig
-   - Also performs concrete writes for hours, services, staff, links, roster
    ─────────────────────────────────────────────────────────────── */
-export async function saveAllSettings(payload: SettingsPayload) {
-  const org = await requireOrg();
+export async function saveAllSettings(payload: SettingsPayload): Promise<SaveResponse> {
+  try {
+    const org = await requireOrg();
 
-  // 1) org basics
-  await prisma.organization.update({
-    where: { id: org.id },
-    data: {
-      name: payload.business.name,
-      timezone: payload.business.timezone,
-      address: payload.business.address ?? null,
-      // You can also create explicit columns for phone/email if you add them to the model
-      dashboardConfig: {
-        // Keep other dashboardConfig keys if you already use it
-        ...(org.dashboardConfig as any),
-        bookingRules: payload.bookingRules,
-        notifications: payload.notifications,
-        onlineBooking: payload.onlineBooking,
-        calendarPrefs: payload.calendarPrefs,
-        contact: { phone: payload.business.phone ?? "", email: payload.business.email ?? "" },
-      },
-    },
-  });
-
-  // 2) opening hours (replace-all)
-  await saveOpeningHours(payload.openingHours);
-
-  // 3) upsert services
-  // naive replace-all to keep code simple and correct
-  await prisma.$transaction([
-    prisma.staffService.deleteMany({ where: { service: { orgId: org.id } } }),
-    prisma.service.deleteMany({ where: { orgId: org.id } }),
-    prisma.service.createMany({
-      data: payload.services.map((s) => ({
-        orgId: org.id,
-        name: s.name,
-        durationMin: s.durationMin,
-        priceCents: s.priceCents,
-        colorHex: s.colorHex ?? null,
-      })),
-    }),
-  ]);
-
-// reload ids (we need them to link staff)
-const services = await prisma.service.findMany({ where: { orgId: org.id } });
-
-const serviceByName = new Map<string, string>(
-  services.map((s: { id: string; name: string }) => [s.name, s.id] as const)
-);
-
-  // 4) upsert staff (replace-all)
-  await prisma.$transaction([
-    prisma.staffSchedule.deleteMany({ where: { staff: { orgId: org.id } } }),
-    prisma.staffService.deleteMany({ where: { staff: { orgId: org.id } } }),
-    prisma.staffMember.deleteMany({ where: { orgId: org.id } }),
-  ]);
-
-  // Recreate staff
-  for (const st of payload.staff) {
-    const created = await prisma.staffMember.create({
+    // 1) org basics + dump JSON config
+    await prisma.organization.update({
+      where: { id: org.id },
       data: {
-        orgId: org.id,
-        name: st.name,
-        email: st.email ?? null,
-        active: st.active,
-        colorHex: st.colorHex ?? null,
+        name: payload.business.name,
+        timezone: payload.business.timezone,
+        address: payload.business.address ?? null,
+        dashboardConfig: {
+          ...(org.dashboardConfig as any),
+          bookingRules: payload.bookingRules,
+          notifications: payload.notifications,
+          onlineBooking: payload.onlineBooking,
+          calendarPrefs: payload.calendarPrefs,
+          contact: { phone: payload.business.phone ?? "", email: payload.business.email ?? "" },
+        },
       },
     });
 
-    // link services (by provided ids OR by matching names if ids are gone)
-    const linkIds =
-      st.serviceIds && st.serviceIds.length
-        ? st.serviceIds
-        : []; // if you pass names only, map them with serviceByName
-
-    if (linkIds.length) {
-      await prisma.staffService.createMany({
-        data: linkIds.map((sid) => ({ staffId: created.id, serviceId: sid })),
-        skipDuplicates: true,
-      });
+    // 2) opening hours
+    if (payload.openingHours?.length) {
+      await saveOpeningHours(payload.openingHours);
     }
+
+    // 3) services (optional replace-all)
+    if (payload.services) {
+      await prisma.$transaction([
+        prisma.staffService.deleteMany({ where: { service: { orgId: org.id } } }),
+        prisma.service.deleteMany({ where: { orgId: org.id } }),
+        prisma.service.createMany({
+          data: payload.services.map((s) => ({
+            orgId: org.id,
+            name: s.name,
+            durationMin: s.durationMin,
+            priceCents: s.priceCents,
+            colorHex: s.colorHex ?? null,
+          })),
+        }),
+      ]);
+    }
+
+    // 4) staff (optional replace-all)
+    if (payload.staff) {
+      await prisma.$transaction([
+        prisma.staffSchedule.deleteMany({ where: { staff: { orgId: org.id } } }),
+        prisma.staffService.deleteMany({ where: { staff: { orgId: org.id } } }),
+        prisma.staffMember.deleteMany({ where: { orgId: org.id } }),
+      ]);
+
+      for (const st of payload.staff) {
+        const created = await prisma.staffMember.create({
+          data: {
+            orgId: org.id,
+            name: st.name,
+            email: st.email ?? null,
+            active: st.active,
+            colorHex: st.colorHex ?? null,
+          },
+        });
+
+        const linkIds = st.serviceIds?.length ? st.serviceIds : [];
+        if (linkIds.length) {
+          await prisma.staffService.createMany({
+            data: linkIds.map((sid) => ({ staffId: created.id, serviceId: sid })),
+            skipDuplicates: true,
+          });
+        }
+      }
+    }
+
+    // 5) roster (optional)
+    if (payload.roster && Object.keys(payload.roster).length) {
+      await saveRoster(payload.roster);
+    }
+
+    return { ok: true };
+  } catch (err: any) {
+    console.error("saveAllSettings failed:", err);
+    return { ok: false, error: err?.message ?? "Unknown error" };
   }
-
-  // 5) roster → StaffSchedule
-  await saveRoster(payload.roster);
-
-  return { ok: true as const };
 }

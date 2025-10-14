@@ -125,10 +125,26 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
     include: { memberships: { include: { org: true } } },
   });
 
-  const org = user?.memberships[0]?.org;
-  if (!org) {
-    redirect("/onboarding");
-  }
+ const org = user?.memberships[0]?.org;
+if (!org) {
+  return (
+    <div className="space-y-6">
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
+          <p className="mt-1 text-sm text-zinc-600">No organisation yet.</p>
+        </div>
+      </header>
+      <div className="rounded-xl bg-white border border-zinc-200 shadow-sm p-6">
+        <p className="text-sm text-zinc-600">
+          You don’t have an organisation or membership yet. Create one on the
+          <a className="underline ml-1" href="/onboarding">onboarding</a> page.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 
   const now = new Date();
   const todayStart = startOfDay(now);
