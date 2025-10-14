@@ -14,9 +14,12 @@ import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { FiltersBar, NewBookingButton, GridColumn, EditBookingPortal } from "./ClientIslands";
+import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
 
 export const runtime = "nodejs";
-
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+export const revalidate = 0;
 /* ───────────────────────────────────────────────────────────────
    Types
    ─────────────────────────────────────────────────────────────── */
@@ -243,29 +246,54 @@ export default async function CalendarPage({
   searchParams?: { view?: ViewMode; date?: string; q?: string; staff?: string; tz?: "org" | "local" };
 }) {
   // auth + org
-  const sp = await searchParams;
+// ───────────────── auth + purchase + org gating ─────────────────
+const sp = searchParams ?? {};
+
+let org: OrgRow | null = null;
+let hasPurchase = false;
+
+try {
+  // Prefer your helper if it's wired up
+  const res = await requireOrgOrPurchase();
+  org = (res as any)?.org ?? null;
+  hasPurchase = !!(res as any)?.hasPurchase;
+} catch {
+  // Fallback so the page still works without the helper
   const session = await getServerSession(authOptions);
-  if (!session?.user?.email) redirect("/api/auth/signin");
+  if (!session?.user?.email) {
+    redirect("/api/auth/signin");
+  }
   const user = await prisma.user.findUnique({
     where: { email: session.user.email },
     include: { memberships: { include: { org: true } } },
   });
- const org = user?.memberships[0]?.org as OrgRow | undefined;
+  org = (user?.memberships?.[0]?.org as OrgRow) ?? null;
+  hasPurchase = false; // adjust when you wire purchase checks server-side
+}
+
+// Not a paying customer → bounce to marketing/landing
+if (!hasPurchase) {
+  redirect("/?purchase=required");
+}
+
+// Purchased but no org yet → nudge to onboarding (and avoid touching org props)
 if (!org) {
   return (
     <div className="p-6">
       <h1 className="text-2xl font-semibold tracking-tight">Calendar</h1>
       <p className="mt-2 text-sm text-zinc-600">
-        No organisation found. Create one on <a className="underline" href="/onboarding">onboarding</a>.
+        Thanks for purchasing Aroha Bookings. Finish setup on{" "}
+        <a className="underline" href="/onboarding">the onboarding page</a> to create your organisation.
       </p>
     </div>
   );
 }
+// ───────────────── from here on, `org` is guaranteed ────────────
 
-  const view: ViewMode = sp?.view === "day" ? "day" : "week";
-  const baseDate = parseDateParam(sp?.date);
-  const tzPref = sp?.tz === "local" ? "local" : "org";
-  const activeTZ = tzPref === "org" ? org.timezone : undefined; // undefined uses local
+const view: ViewMode = sp.view === "day" ? "day" : "week";
+const baseDate = parseDateParam(sp.date);
+const tzPref = sp.tz === "local" ? "local" : "org";
+const activeTZ = tzPref === "org" ? org.timezone : undefined; // undefined → local TZ
 
   // Configurable window
   const SLOT_MIN = 30; // minutes

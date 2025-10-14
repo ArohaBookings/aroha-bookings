@@ -10,16 +10,23 @@ import React from "react";
 import { prisma } from "@/lib/db";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { redirect } from "next/navigation";
 import { LogoutButton } from "@/components/LogoutButton";
+import { redirect } from "next/navigation";
+import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+export const revalidate = 0;
+
 
 /* ──────────────────────────────────────────────────────────────────────────
    Constants & helpers
 ────────────────────────────────────────────────────────────────────────── */
 
-export const dynamic = "force-dynamic";
+const session = await getServerSession(authOptions);
+if (!session?.user?.email) redirect("/api/auth/signin");
+
 
 const TZ = "Pacific/Auckland";
 const LOCALE = "en-NZ";
