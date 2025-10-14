@@ -14,7 +14,8 @@
     "pr:deploy": "prisma migrate deploy --schema=prisma/schema.prisma",
     "pr:studio": "prisma studio --schema=prisma/schema.prisma",
     "pr:seed": "tsx prisma/seed.ts",
-    "postinstall": "prisma generate --schema=prisma/schema.prisma"
+    "postinstall": "prisma generate --schema=prisma/schema.prisma",
+    "vercel-build": "prisma migrate deploy --schema=prisma/schema.prisma && next build"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.0",
