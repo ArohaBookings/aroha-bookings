@@ -12,21 +12,17 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { LogoutButton } from "@/components/LogoutButton";
 import { redirect } from "next/navigation";
-import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
+import { unstable_noStore as noStore } from "next/cache";
+
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 export const revalidate = 0;
 
-
 /* ──────────────────────────────────────────────────────────────────────────
    Constants & helpers
 ────────────────────────────────────────────────────────────────────────── */
-
-const session = await getServerSession(authOptions);
-if (!session?.user?.email) redirect("/api/auth/signin");
-
 
 const TZ = "Pacific/Auckland";
 const LOCALE = "en-NZ";
@@ -123,6 +119,7 @@ type CompareRow = { service: string; last: number; this: number; deltaPct: numbe
 ────────────────────────────────────────────────────────────────────────── */
 
 export default async function DashboardPage(): Promise<React.ReactElement> {
+     noStore();
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) {
     redirect("/api/auth/signin");
