@@ -13,6 +13,8 @@ import { authOptions } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { LogoutButton } from "@/components/LogoutButton";
 
+export const runtime = "nodejs";
+
 /* ──────────────────────────────────────────────────────────────────────────
    Constants & helpers
 ────────────────────────────────────────────────────────────────────────── */

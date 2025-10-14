@@ -15,6 +15,8 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { FiltersBar, NewBookingButton, GridColumn, EditBookingPortal } from "./ClientIslands";
 
+export const runtime = "nodejs";
+
 /* ───────────────────────────────────────────────────────────────
    Types
    ─────────────────────────────────────────────────────────────── */

@@ -3,6 +3,8 @@ import { prisma } from "@/lib/db";
 import { auth } from "@/lib/auth";
 import { redirect, notFound } from "next/navigation";
 
+export const runtime = "nodejs";
+
 const TZ = "Pacific/Auckland";
 const NZ = "en-NZ";
 const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
