@@ -1,0 +1,308 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/* ────────────────────────────────────────────────
+   AUTH MODELS (NextAuth)
+─────────────────────────────────────────────── */
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // App relations
+  memberships   Membership[]
+
+  // NextAuth relations
+  accounts      Account[]
+  sessions      Session[]
+}
+
+model Account {
+  id                String   @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+/* ────────────────────────────────────────────────
+   CORE APP MODELS (Aroha Bookings)
+─────────────────────────────────────────────── */
+
+enum Plan {
+  LITE
+  STARTER
+  PROFESSIONAL
+  PREMIUM
+}
+
+model Organization {
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  timezone        String   @default("Pacific/Auckland")
+  plan            Plan     @default(PROFESSIONAL)
+  address         String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  dashboardConfig Json     @default("{}") // per-org dashboard preferences
+  smsNumber  String?   
+  smsActive  Boolean   @default(false)
+
+  // Relations
+  staff           StaffMember[]
+  services        Service[]
+  hours           OpeningHours[]
+  appointments    Appointment[]
+  memberships     Membership[]
+  invites         OrgInvite[]
+  customers       Customer[]
+  settings        OrgSettings?
+  holidays        Holiday[]
+  checkoutTokens  CheckoutToken[]
+
+  @@index([name])
+  @@index([slug])
+}
+
+model Membership {
+  id     String @id @default(cuid())
+  userId String
+  orgId  String
+  role   String @default("owner") // owner, admin, staff
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+  @@index([userId])
+}
+
+model OrgInvite {
+  id        String   @id @default(cuid())
+  orgId     String
+  email     String
+  token     String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, email])
+}
+
+model StaffMember {
+  id       String  @id @default(cuid())
+  orgId    String
+  name     String
+  email    String? @unique
+  active   Boolean @default(true)
+  colorHex String?
+
+  org          Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  serviceLinks StaffService[]
+  schedules    StaffSchedule[]
+  appointments Appointment[]
+
+  @@index([orgId, active])
+}
+
+model Service {
+  id          String  @id @default(cuid())
+  orgId       String
+  name        String
+  durationMin Int
+  priceCents  Int
+  colorHex    String?
+
+  org          Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  staffLinks   StaffService[]
+  appointments Appointment[]
+
+  @@index([orgId, name])
+}
+
+model StaffService {
+  id        String @id @default(cuid())
+  staffId   String
+  serviceId String
+
+  staff   StaffMember @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  service Service     @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@unique([staffId, serviceId])
+  @@index([staffId])
+  @@index([serviceId])
+}
+
+model StaffSchedule {
+  id        String @id @default(cuid())
+  staffId   String
+  dayOfWeek Int      // 0=Sun..6=Sat
+  startTime String   // "09:00"
+  endTime   String   // "17:00"
+
+  staff StaffMember @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([staffId, dayOfWeek])
+}
+
+model OpeningHours {
+  id       String @id @default(cuid())
+  orgId    String
+  weekday  Int
+  openMin  Int
+  closeMin Int
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, weekday])
+}
+
+/* ────────────────────────────────────────────────
+   CUSTOMERS & APPOINTMENTS
+─────────────────────────────────────────────── */
+
+enum AppointmentStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+model Customer {
+  id        String   @id @default(cuid())
+  orgId     String
+  name      String
+  phone     String
+  email     String?
+  createdAt DateTime @default(now())
+
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+
+  @@unique([orgId, phone])
+  @@index([orgId])
+}
+
+model Appointment {
+  id String @id @default(cuid())
+
+  orgId      String
+  staffId    String?
+  serviceId  String?
+  customerId String?
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  staff    StaffMember? @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  service  Service?     @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  customer Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  customerName  String
+  customerPhone String
+  customerEmail String?
+  notes         String?
+  startsAt      DateTime
+  endsAt        DateTime
+  source        String @default("phone")
+  status        AppointmentStatus @default(SCHEDULED)
+  cancelledAt   DateTime?
+  cancelledBy   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([orgId, staffId, startsAt, endsAt])
+  @@index([customerPhone])
+  @@index([orgId, startsAt])
+}
+
+/* ────────────────────────────────────────────────
+   SETTINGS & CONFIGURATION (per-org JSON)
+─────────────────────────────────────────────── */
+
+model OrgSettings {
+  id        String   @id @default(cuid())
+  orgId     String   @unique
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  data      Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/* ────────────────────────────────────────────────
+   HOLIDAYS & CHECKOUT TOKENS
+─────────────────────────────────────────────── */
+
+model Holiday {
+  id        String   @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  dateISO   String
+  label     String
+  createdAt DateTime @default(now())
+
+  @@index([orgId, dateISO])
+}
+
+model CheckoutToken {
+  id             String   @id @default(cuid())
+  token          String   @unique
+  email          String
+  plan           Plan
+  orgName        String?
+  shopifyOrderId String
+  status         String   @default("NEW") // NEW | USED | EXPIRED
+  expiresAt      DateTime
+  usedAt         DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  orgId          String?
+  org            Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+
+  @@index([token])
+  @@index([shopifyOrderId])
+  @@index([email])
+}
