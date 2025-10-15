@@ -1,19 +1,9 @@
-// middleware.ts  (✅ place at project root)
-import { withAuth } from "next-auth/middleware";
+// middleware.ts  (project root)
+export { default } from "next-auth/middleware";
 
-// If a user hits a protected URL without a session, NextAuth will
-// redirect them to this sign-in page.
-export default withAuth({
-  pages: {
-    signIn: "/api/auth/signin",
-  },
-});
-
-// Protect only the internal app surfaces.
-// Everything else stays public (/, /register/*, /api/*, assets, webhook, etc).
+// Protect only signed-in areas; leave marketing, register, API, webhooks public.
 export const config = {
   matcher: [
-    // app sections that require an authenticated session
     "/dashboard",
     "/calendar",
     "/clients",

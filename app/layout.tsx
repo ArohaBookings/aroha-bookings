@@ -19,17 +19,21 @@ export default async function RootLayout({
   // default: no sidebar for anonymous / non-customers
   let showSidebar = false;
 
-  // check session, then purchase/org — but never throw from layout
-  try {
-    const session = await getServerSession(authOptions);
-    if (session?.user?.email) {
-      const { hasPurchase, org } = await requireOrgOrPurchase();
-      showSidebar = Boolean(hasPurchase && org);
-    }
-  } catch {
-    // swallow any redirect/throw from helper; page components handle auth gating
-    showSidebar = false;
+// ✅ layout.tsx — restrict sidebar to paying / active-org users only
+try {
+  const session = await getServerSession(authOptions);
+  if (session?.user?.email) {
+    const res = await requireOrgOrPurchase();
+
+    // show sidebar ONLY if user has a valid, active org (means they've paid + finished setup)
+    const hasPaidAndSetup =
+      Boolean(res.org) || res.isSuperAdmin; // superadmins always see it
+
+    showSidebar = hasPaidAndSetup;
   }
+} catch {
+  showSidebar = false;
+}
 
   return (
     <html lang="en">

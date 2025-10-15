@@ -15,10 +15,12 @@ import { redirect } from "next/navigation";
 import { unstable_noStore as noStore } from "next/cache";
 
 
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 export const revalidate = 0;
+
 
 /* ──────────────────────────────────────────────────────────────────────────
    Constants & helpers
@@ -878,3 +880,4 @@ function weekLabel(s: Date): string {
 function sumValues(arr: WeekPoint[]): number {
   return arr.reduce((s: number, p: WeekPoint) => s + p.value, 0);
 }
+

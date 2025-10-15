@@ -1,3 +1,4 @@
+// app/logout/page.tsx
 "use client";
 
 import { useEffect } from "react";
@@ -5,8 +6,8 @@ import { signOut } from "next-auth/react";
 
 export default function LogoutPage() {
   useEffect(() => {
-    // sign out and send them to /login
-    signOut({ callbackUrl: "/login" });
+    // Redirect after sign out; no "sorry we couldn't" messages.
+    signOut({ callbackUrl: "/login", redirect: true });
   }, []);
 
   return (
