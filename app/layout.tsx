@@ -1,8 +1,8 @@
 // app/layout.tsx
 import "./globals.css";
 import React from "react";
-import Header from "@/components/Header";          // ← login/logout on every page
-import Sidebar from "@/components/Sidebar";        // ← your existing sidebar
+import Sidebar from "@/components/Sidebar";
+import Header from "@/components/Header";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
@@ -16,41 +16,45 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  // default: no sidebar for anonymous / non-customers
+  // Default values
   let showSidebar = false;
+  let hasAccess = false;
 
-// ✅ layout.tsx — restrict sidebar to paying / active-org users only
-try {
-  const session = await getServerSession(authOptions);
-  if (session?.user?.email) {
-    const res = await requireOrgOrPurchase();
-
-    // show sidebar ONLY if user has a valid, active org (means they've paid + finished setup)
-    const hasPaidAndSetup =
-      Boolean(res.org) || res.isSuperAdmin; // superadmins always see it
-
-    showSidebar = hasPaidAndSetup;
+  try {
+    const session = await getServerSession(authOptions);
+    if (session?.user?.email) {
+      const res = await requireOrgOrPurchase();
+      hasAccess = Boolean(res.org) || res.isSuperAdmin;
+      showSidebar = hasAccess;
+    }
+  } catch {
+    showSidebar = false;
   }
-} catch {
-  showSidebar = false;
-}
 
   return (
     <html lang="en">
-      <body className="min-h-screen bg-gray-50 text-zinc-900 antialiased">
-        {/* Global header is always visible */}
+      <body className="min-h-screen flex flex-col bg-gray-50 text-zinc-900 antialiased">
+        {/* Global Header */}
         <Header />
 
-        <div className="max-w-6xl mx-auto px-4 py-6 flex gap-6">
-          {/* Sidebar only when eligible */}
-          {showSidebar ? (
-            <aside className="w-64 shrink-0 hidden md:block">
-              <Sidebar />
+        {/* Main layout container */}
+        <div className="flex-1 flex w-full">
+          {/* Sidebar (desktop only) */}
+          {showSidebar && (
+            <aside className="hidden md:flex flex-col w-64 bg-black text-white h-full">
+              <div className="flex-1 overflow-y-auto">
+                <Sidebar />
+              </div>
+              <footer className="p-4 border-t border-zinc-800 text-xs text-zinc-400">
+                © {new Date().getFullYear()} Aroha Systems
+              </footer>
             </aside>
-          ) : null}
+          )}
 
-          {/* Main content */}
-          <main className="flex-1">{children}</main>
+          {/* Page content area */}
+          <main className="flex-1 overflow-y-auto bg-white p-6 md:rounded-tl-lg">
+            <div className="max-w-7xl mx-auto">{children}</div>
+          </main>
         </div>
       </body>
     </html>
