@@ -1,19 +1,36 @@
+// lib/auth.ts
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import CredentialsProvider from "next-auth/providers/credentials";
 import EmailProvider from "next-auth/providers/email";
-import { getServerSession, type NextAuthOptions } from "next-auth";
+import type { NextAuthOptions, Session } from "next-auth";
+import { getServerSession } from "next-auth";
 import { compare } from "bcryptjs";
 import { prisma } from "@/lib/db";
 import type { JWT } from "next-auth/jwt";
-import type { Session } from "next-auth";
 
-// -----------------------------
-// Type Definitions
-// -----------------------------
-interface MembershipLite {
-  orgId: string;
-  role?: string;
+/* ────────────────────────────────────────────────────────────────────────────
+   ENV / CONFIG
+──────────────────────────────────────────────────────────────────────────── */
+
+const SUPERADMINS: string[] = (process.env.SUPERADMINS || "")
+  .split(",")
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
+
+const SUPERADMIN_PASSWORD = (process.env.SUPERADMIN_PASSWORD || "").trim();
+const EMAIL_SERVER = (process.env.EMAIL_SERVER || "").trim();
+const EMAIL_FROM = (process.env.EMAIL_FROM || "").trim();
+
+/** Reusable helper */
+export function isSuperAdminEmail(email: string | null | undefined): boolean {
+  return !!email && SUPERADMINS.includes(email.trim().toLowerCase());
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+   LOCAL TYPES (no @prisma/client imports)
+──────────────────────────────────────────────────────────────────────────── */
+
+type MembershipLite = { orgId: string; role?: string | null };
 
 type AppToken = JWT & {
   userId?: string;
@@ -25,22 +42,19 @@ type AppToken = JWT & {
   orgCount?: number;
 };
 
-// -----------------------------
-// Environment Config
-// -----------------------------
-const SUPERADMINS = (process.env.SUPERADMINS || "")
-  .split(",")
-  .map((e) => e.trim().toLowerCase())
-  .filter(Boolean);
+/** Shape we expect from prisma.user.findUnique include */
+type UserWithOptionalPassword = {
+  id: string;
+  email: string | null;
+  name: string | null;
+  password?: string | null; // <- optional in case your client types lag
+  memberships?: MembershipLite[];
+};
 
-const SUPERADMIN_PASSWORD = process.env.SUPERADMIN_PASSWORD || "";
+/* ────────────────────────────────────────────────────────────────────────────
+   PROVIDERS
+──────────────────────────────────────────────────────────────────────────── */
 
-const EMAIL_SERVER = process.env.EMAIL_SERVER;
-const EMAIL_FROM = process.env.EMAIL_FROM;
-
-// -----------------------------
-// Providers Setup
-// -----------------------------
 const providers: any[] = [
   CredentialsProvider({
     name: "Credentials",
@@ -49,24 +63,19 @@ const providers: any[] = [
       password: { label: "Password", type: "password" },
     },
     async authorize(credentials) {
-      const email = credentials?.email?.trim().toLowerCase();
+      const email = credentials?.email?.trim().toLowerCase() || "";
       const password = credentials?.password || "";
 
       if (!email || !password) throw new Error("Missing credentials");
 
-      // 1️⃣ Superadmin fast path
-      if (
-        SUPERADMINS.includes(email) &&
-        SUPERADMIN_PASSWORD &&
-        password === SUPERADMIN_PASSWORD
-      ) {
+      // 1) Superadmin fast-path
+      if (isSuperAdminEmail(email) && SUPERADMIN_PASSWORD && password === SUPERADMIN_PASSWORD) {
         const existing = await prisma.user.findUnique({ where: { email } });
         const userRow =
           existing ??
           (await prisma.user.create({
             data: { email, name: "Superadmin" },
           }));
-
         return {
           id: userRow.id,
           email: userRow.email!,
@@ -75,31 +84,30 @@ const providers: any[] = [
         };
       }
 
-      // 2️⃣ Normal user lookup
-      const user = await prisma.user.findUnique({
+      // 2) Normal user lookup
+      const user = (await prisma.user.findUnique({
         where: { email },
         include: { memberships: { select: { orgId: true, role: true } } },
-      });
+      })) as UserWithOptionalPassword | null;
 
       if (!user || !user.password) throw new Error("Invalid email or password");
 
-      const valid = await compare(password, user.password);
-      if (!valid) throw new Error("Invalid email or password");
+      const ok = await compare(password, user.password);
+      if (!ok) throw new Error("Invalid email or password");
 
       const role = user.memberships?.[0]?.role ?? null;
 
       return {
         id: user.id,
-        email: user.email!,
+        email: user.email ?? undefined,
         name: user.name ?? undefined,
         role,
-        isSuperAdmin: SUPERADMINS.includes(email),
+        isSuperAdmin: isSuperAdminEmail(email),
       };
     },
   }),
 ];
 
-// Optional: Add EmailProvider for passwordless logins if env vars exist
 if (EMAIL_SERVER && EMAIL_FROM) {
   providers.push(
     EmailProvider({
@@ -109,41 +117,40 @@ if (EMAIL_SERVER && EMAIL_FROM) {
   );
 }
 
-// -----------------------------
-// NextAuth Config
-// -----------------------------
+/* ────────────────────────────────────────────────────────────────────────────
+   NEXTAUTH OPTIONS
+──────────────────────────────────────────────────────────────────────────── */
+
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
   session: { strategy: "jwt" },
   providers,
-  pages: {
-    signIn: "/login",
-  },
+  pages: { signIn: "/login" },
 
   callbacks: {
-    async jwt({ token, user }: { token: JWT; user?: any }) {
+    async jwt({ token, user }) {
       const t = token as AppToken;
 
       if (user) {
-        t.userId = user.id ?? t.userId;
-        t.email = user.email ?? t.email;
-        t.name = user.name ?? t.name;
-        t.role = user.role ?? t.role;
-        t.isSuperAdmin = Boolean(user.isSuperAdmin);
+        t.userId = (user as any).id ?? t.userId;
+        t.email = (user as any).email ?? t.email;
+        t.name = (user as any).name ?? t.name;
+        t.role = (user as any).role ?? t.role;
+        t.isSuperAdmin = Boolean((user as any).isSuperAdmin);
       }
 
-      // Refresh org info
+      // Refresh org membership info into the token
       if (t.email) {
         try {
-          const memberships: MembershipLite[] = await prisma.membership.findMany({
+          const memberships = (await prisma.membership.findMany({
             where: { user: { email: t.email } },
-            select: { orgId: true },
-          });
+            select: { orgId: true, role: true },
+          })) as MembershipLite[];
 
           t.orgIds = memberships.map((m) => m.orgId);
           t.orgCount = t.orgIds.length;
         } catch {
-          // ignore DB issues; token remains valid
+          // swallow DB errors
         }
       }
 
@@ -171,9 +178,10 @@ export const authOptions: NextAuthOptions = {
   secret: process.env.NEXTAUTH_SECRET,
 };
 
-// -----------------------------
-// Helper
-// -----------------------------
+/* ────────────────────────────────────────────────────────────────────────────
+   SERVER HELPER
+──────────────────────────────────────────────────────────────────────────── */
+
 export async function auth() {
   return getServerSession(authOptions);
 }
