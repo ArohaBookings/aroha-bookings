@@ -7,6 +7,11 @@
    - Keyboard shortcuts:  N=new, /=search, Esc=close modal
    ====================================================================== */
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const dynamicParams = true;
+
 import React from "react";
 import Link from "next/link";
 import { getServerSession } from "next-auth";
@@ -16,7 +21,6 @@ import { prisma } from "@/lib/db";
 import { FiltersBar, NewBookingButton, GridColumn, EditBookingPortal } from "./ClientIslands";
 import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
 
-export const runtime = "nodejs";
 
 /* ───────────────────────────────────────────────────────────────
    Types

@@ -1,24 +1,30 @@
 // app/login/page.tsx
 "use client";
 
+import { Suspense, useCallback, useMemo, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
-import { useCallback, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
 
+/** Split into two components so the one using useSearchParams is under Suspense */
 export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="min-h-[70vh] grid place-items-center">Loading…</div>}>
+      <LoginInner />
+    </Suspense>
+  );
+}
+
+function LoginInner() {
   const router = useRouter();
   const sp = useSearchParams();
 
-  // If NextAuth sent back an error in the URL (?error=CredentialsSignin, etc)
   const urlError = sp.get("error");
-
-  // we only allow internal callbackUrls like "/dashboard" (no full URLs)
   const rawCb = sp.get("callbackUrl") || "/dashboard";
+
+  // sanitize callback to internal paths only
   const callbackUrl = useMemo(() => {
     try {
-      // treat absolute URLs as unsafe; keep internal paths only
       if (rawCb.startsWith("http://") || rawCb.startsWith("https://")) return "/dashboard";
-      // ensure it starts with a slash
       return rawCb.startsWith("/") ? rawCb : "/dashboard";
     } catch {
       return "/dashboard";
@@ -31,13 +37,13 @@ export default function LoginPage() {
 
   const onSubmit = useCallback(async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (loading) return; // block double submits
+    if (loading) return;
     setLoading(true);
     setError(null);
 
-    const form = new FormData(e.currentTarget);
-    const email = String(form.get("email") || "").trim().toLowerCase();
-    const password = String(form.get("password") || "");
+    const fd = new FormData(e.currentTarget);
+    const email = String(fd.get("email") || "").trim().toLowerCase();
+    const password = String(fd.get("password") || "");
 
     if (!email || !password) {
       setError("Please enter your email and password.");
@@ -45,12 +51,11 @@ export default function LoginPage() {
       return;
     }
 
-    // Use redirect: false so we can sanitize & route ourselves
     const res = await signIn("credentials", {
       email,
       password,
-      redirect: false,
-      callbackUrl, // still passed for consistency (NextAuth may use it)
+      redirect: false,        // <-- prevents NextAuth from auto-redirecting
+      callbackUrl,            //     we’ll route safely ourselves
     });
 
     if (!res) {
@@ -58,16 +63,13 @@ export default function LoginPage() {
       setLoading(false);
       return;
     }
-
     if (res.error) {
       setError("Invalid email or password.");
       setLoading(false);
       return;
     }
 
-    // Success — push to safe internal callback
     router.replace(callbackUrl);
-    // no need to setLoading(false); we’re navigating
   }, [callbackUrl, loading, router]);
 
   return (
@@ -123,9 +125,7 @@ export default function LoginPage() {
             {loading ? "Signing in…" : "Sign in"}
           </button>
 
-          {error && (
-            <p className="text-sm text-red-600 text-center">{error}</p>
-          )}
+          {error && <p className="text-sm text-red-600 text-center">{error}</p>}
         </form>
 
         <div className="mt-4 text-center text-sm">
@@ -134,7 +134,6 @@ export default function LoginPage() {
           </a>
         </div>
 
-        {/* Small print / tip */}
         <p className="mt-4 text-center text-xs text-zinc-500">
           By continuing, you agree to the Terms and acknowledge the Privacy Policy.
         </p>

@@ -1,5 +1,10 @@
-"use client";
+"use client"; // this page is interactive, so keep it client-side
 
+// NOTE: Do NOT export revalidate/dynamic flags from client components.
+// They belong only in a server layout or parent page.
+
+
+ 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /* ──────────────────────────────────────────────────────────────

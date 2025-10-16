@@ -1,11 +1,19 @@
 /* app/dashboard/page.tsx
-   Aroha Bookings — Production Dashboard (extended)
-   - Multi-tenant (scoped by the signed-in user's org)
+   Aroha Bookings — Production Dashboard (hardened)
+   - Multi-tenant (scoped by signed-in user's org)
+   - SSR (App Router) + noStore()
    - No external chart libs (SVG-only)
-   - No JSX namespace types, only React.ReactElement
-   - TypeScript strict: no implicit any
-   - Safe with empty DBs; no Prisma crashes
+   - No Prisma crashes on empty DBs
+   - Friendly empty states & QA hints
+   - Strict types, no implicit any
 */
+
+/* segment flags */
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const dynamicParams = true;
+
 import React from "react";
 import { prisma } from "@/lib/db";
 import { getServerSession } from "next-auth";
@@ -13,10 +21,6 @@ import { authOptions } from "@/lib/auth";
 import { LogoutButton } from "@/components/LogoutButton";
 import { redirect } from "next/navigation";
 import { unstable_noStore as noStore } from "next/cache";
-
-
-
-export const runtime = "nodejs";
 
 
 
@@ -119,38 +123,40 @@ type CompareRow = { service: string; last: number; this: number; deltaPct: numbe
 ────────────────────────────────────────────────────────────────────────── */
 
 export default async function DashboardPage(): Promise<React.ReactElement> {
-     noStore();
+  noStore();
+
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) {
     redirect("/api/auth/signin");
   }
 
-  // Find org for this user
+  // Resolve org (first membership wins for now)
   const user = await prisma.user.findUnique({
     where: { email: session.user.email! },
     include: { memberships: { include: { org: true } } },
   });
 
- const org = user?.memberships[0]?.org;
-if (!org) {
-  return (
-    <div className="space-y-6">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
-          <p className="mt-1 text-sm text-zinc-600">No organisation yet.</p>
-        </div>
-      </header>
-      <div className="rounded-xl bg-white border border-zinc-200 shadow-sm p-6">
-        <p className="text-sm text-zinc-600">
-          You don’t have an organisation or membership yet. Create one on the
-          <a className="underline ml-1" href="/onboarding">onboarding</a> page.
-        </p>
-      </div>
-    </div>
-  );
-}
+  const org = user?.memberships?.[0]?.org ?? null;
 
+  if (!org) {
+    return (
+      <div className="space-y-6">
+        <header className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
+            <p className="mt-1 text-sm text-zinc-600">No organisation yet.</p>
+          </div>
+          <LogoutButton />
+        </header>
+        <div className="rounded-xl bg-white border border-zinc-200 shadow-sm p-6">
+          <p className="text-sm text-zinc-600">
+            You don’t have an organisation or membership yet. Create one on the
+            <a className="underline ml-1" href="/onboarding">onboarding</a> page.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const now = new Date();
   const todayStart = startOfDay(now);
@@ -159,127 +165,172 @@ if (!org) {
   const weekEnd = endOfWeek(now);
   const lastWeekStart = startOfWeeksAgo(now, 1);
   const lastWeekEnd = endOfWeeksAgo(now, 1);
-
-  // 8-week window (incl. current week) for trend charts
-  const weeksBack = 7;
+  const weeksBack = 7; // 8 weeks inclusive
 
   /* ──────────────────────────────────────────────────────────────
-     Main queries (all scoped by org)
+     Main queries (scoped by org)
   ─────────────────────────────────────────────────────────────── */
-  const [
-    todayCount,
-    uniqueTodayPhones,
-    uniqueAllPhones,
-    staffList,
-    weekAppts,
-    recentAppts,
-    cancelledCount,
-    noShowCount,
-    // trendPoints (bookings per week)
-    bookingsPerWeek,
-    // revenue trend (sum of service price per week)
-    revenuePerWeek,
-    // 90-day retention calc needs phones from past 90 days
-    phones90d,
-    // this week and last week service tallies
-    serviceThisWeek,
-    serviceLastWeek,
-    // source breakdown
-    sourceBreakdown
-  ] = await Promise.all([
-    prisma.appointment.count({
-      where: { orgId: org.id, startsAt: { gte: todayStart, lte: todayEnd } },
-    }),
-    prisma.appointment.findMany({
-      where: { orgId: org.id, startsAt: { gte: todayStart, lte: todayEnd } },
-      select: { customerPhone: true },
-      distinct: ["customerPhone"],
-    }),
-    prisma.appointment.findMany({
-      where: { orgId: org.id },
-      select: { customerPhone: true },
-      distinct: ["customerPhone"],
-    }),
-    prisma.staffMember.findMany({
-      where: { orgId: org.id },
-      select: { id: true, name: true },
-      orderBy: { name: "asc" },
-    }),
-    prisma.appointment.findMany({
-      where: { orgId: org.id, startsAt: { gte: weekStart, lte: weekEnd } },
-      include: {
-        staff: { select: { id: true, name: true } },
-        service: { select: { name: true, priceCents: true } },
-      },
-      orderBy: { startsAt: "asc" },
-    }) as Promise<ApptLite[]>,
-    prisma.appointment.findMany({
-      where: { orgId: org.id },
-      orderBy: { startsAt: "desc" },
-      take: 14,
-      include: {
-        staff: { select: { name: true } },
-        service: { select: { name: true } },
-      },
-    }) as Promise<ApptLite[]>,
-    prisma.appointment.count({
-      where: { orgId: org.id, status: "CANCELLED" },
-    }),
-    prisma.appointment.count({
-      where: { orgId: org.id, status: "NO_SHOW" },
-    }),
-    // bookings per week (count)
-    (async (): Promise<WeekPoint[]> => {
-      const pts: WeekPoint[] = [];
-      for (let i = weeksBack; i >= 0; i--) {
-        const s = startOfWeeksAgo(now, i);
-        const e = endOfWeeksAgo(now, i);
-        const count = await prisma.appointment.count({
-          where: { orgId: org.id, startsAt: { gte: s, lte: e } },
-        });
-        pts.push({ label: weekLabel(s), value: count });
-      }
-      return pts;
-    })(),
-    // revenue per week
-    (async (): Promise<WeekPoint[]> => {
-      const pts: WeekPoint[] = [];
-      for (let i = weeksBack; i >= 0; i--) {
-        const s = startOfWeeksAgo(now, i);
-        const e = endOfWeeksAgo(now, i);
-        const appts = (await prisma.appointment.findMany({
-          where: { orgId: org.id, startsAt: { gte: s, lte: e } },
-          select: { service: { select: { priceCents: true } } },
-        })) as Array<{ service: { priceCents: number | null } | null }>;
-        const cents = appts.reduce((sum: number, a) => sum + (a.service?.priceCents ?? 0), 0);
-        pts.push({ label: weekLabel(s), value: cents });
-      }
-      return pts;
-    })(),
-    prisma.appointment.findMany({
-      where: { orgId: org.id, startsAt: { gte: daysAgo(now, 90), lte: now } },
-      select: { customerPhone: true },
-    }),
-    prisma.appointment.findMany({
-      where: { orgId: org.id, startsAt: { gte: weekStart, lte: weekEnd } },
-      select: { service: { select: { name: true } } },
-    }),
-    prisma.appointment.findMany({
-      where: { orgId: org.id, startsAt: { gte: lastWeekStart, lte: lastWeekEnd } },
-      select: { service: { select: { name: true } } },
-    }),
-    (async (): Promise<SourceSlice[]> => {
-      const labels: string[] = ["phone", "web", "manual"];
-      const out: SourceSlice[] = [];
-      for (const label of labels) {
-        const count = await prisma.appointment.count({
-          where: { orgId: org.id, source: label },
-        });
-        out.push({ label, count });
-      }
-      return out;
-    })(),
-  ]);
+  let todayCount = 0;
+  let uniqueTodayPhones: Array<{ customerPhone: string }> = [];
+  let uniqueAllPhones: Array<{ customerPhone: string }> = [];
+  let staffList: StaffLite[] = [];
+  let weekAppts: ApptLite[] = [];
+  let recentAppts: ApptLite[] = [];
+  let cancelledCount = 0;
+  let noShowCount = 0;
+  let bookingsPerWeek: WeekPoint[] = [];
+  let revenuePerWeek: WeekPoint[] = [];
+  let phones90d: Array<{ customerPhone: string }> = [];
+  let serviceThisWeek: Array<{ service: { name: string | null } | null }> = [];
+  let serviceLastWeek: Array<{ service: { name: string | null } | null }> = [];
+  let sourceBreakdown: SourceSlice[] = [];
+
+  try {
+    [
+      todayCount,
+      uniqueTodayPhones,
+      uniqueAllPhones,
+      staffList,
+      weekAppts,
+      recentAppts,
+      cancelledCount,
+      noShowCount,
+      bookingsPerWeek,
+      revenuePerWeek,
+      phones90d,
+      serviceThisWeek,
+      serviceLastWeek,
+      sourceBreakdown,
+    ] = await Promise.all([
+      prisma.appointment.count({
+        where: { orgId: org.id, startsAt: { gte: todayStart, lte: todayEnd } },
+      }),
+
+      prisma.appointment.findMany({
+        where: { orgId: org.id, startsAt: { gte: todayStart, lte: todayEnd } },
+        select: { customerPhone: true },
+        distinct: ["customerPhone"],
+      }),
+
+      prisma.appointment.findMany({
+        where: { orgId: org.id },
+        select: { customerPhone: true },
+        distinct: ["customerPhone"],
+      }),
+
+      prisma.staffMember.findMany({
+        where: { orgId: org.id },
+        select: { id: true, name: true },
+        orderBy: { name: "asc" },
+      }),
+
+      prisma.appointment.findMany({
+        where: { orgId: org.id, startsAt: { gte: weekStart, lte: weekEnd } },
+        include: {
+          staff: { select: { id: true, name: true } },
+          service: { select: { name: true, priceCents: true } },
+        },
+        orderBy: { startsAt: "asc" },
+      }) as Promise<ApptLite[]>,
+
+      prisma.appointment.findMany({
+        where: { orgId: org.id },
+        orderBy: { startsAt: "desc" },
+        take: 14,
+        include: {
+          staff: { select: { name: true } },
+          service: { select: { name: true } },
+        },
+      }) as Promise<ApptLite[]>,
+
+      prisma.appointment.count({
+        where: { orgId: org.id, status: "CANCELLED" },
+      }),
+
+      prisma.appointment.count({
+        where: { orgId: org.id, status: "NO_SHOW" },
+      }),
+
+      // bookings per week (count)
+      (async (): Promise<WeekPoint[]> => {
+        const pts: WeekPoint[] = [];
+        for (let i = weeksBack; i >= 0; i--) {
+          const s = startOfWeeksAgo(now, i);
+          const e = endOfWeeksAgo(now, i);
+          // eslint-disable-next-line no-await-in-loop
+          const count = await prisma.appointment.count({
+            where: { orgId: org.id, startsAt: { gte: s, lte: e } },
+          });
+          pts.push({ label: weekLabel(s), value: count });
+        }
+        return pts;
+      })(),
+
+      // revenue per week (sum of service price)
+      (async (): Promise<WeekPoint[]> => {
+        const pts: WeekPoint[] = [];
+        for (let i = weeksBack; i >= 0; i--) {
+          const s = startOfWeeksAgo(now, i);
+          const e = endOfWeeksAgo(now, i);
+          // eslint-disable-next-line no-await-in-loop
+          const appts = (await prisma.appointment.findMany({
+            where: { orgId: org.id, startsAt: { gte: s, lte: e } },
+            select: { service: { select: { priceCents: true } } },
+          })) as Array<{ service: { priceCents: number | null } | null }>;
+          const cents = appts.reduce((sum: number, a) => sum + (a.service?.priceCents ?? 0), 0);
+          pts.push({ label: weekLabel(s), value: cents });
+        }
+        return pts;
+      })(),
+
+      prisma.appointment.findMany({
+        where: { orgId: org.id, startsAt: { gte: daysAgo(now, 90), lte: now } },
+        select: { customerPhone: true },
+      }),
+
+      prisma.appointment.findMany({
+        where: { orgId: org.id, startsAt: { gte: weekStart, lte: weekEnd } },
+        select: { service: { select: { name: true } } },
+      }),
+
+      prisma.appointment.findMany({
+        where: { orgId: org.id, startsAt: { gte: lastWeekStart, lte: lastWeekEnd } },
+        select: { service: { select: { name: true } } },
+      }),
+
+      (async (): Promise<SourceSlice[]> => {
+        const labels: string[] = ["phone", "web", "manual"];
+        const out: SourceSlice[] = [];
+        for (const label of labels) {
+          // eslint-disable-next-line no-await-in-loop
+          const count = await prisma.appointment.count({
+            where: { orgId: org.id, source: label },
+          });
+          out.push({ label, count });
+        }
+        return out;
+      })(),
+    ]);
+  } catch (err) {
+    console.error("Dashboard data error", err);
+    return (
+      <div className="space-y-6">
+        <header className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
+            <p className="mt-1 text-sm text-zinc-600">We ran into a data issue.</p>
+          </div>
+          <LogoutButton />
+        </header>
+
+        <div className="rounded-xl bg-white border border-red-200 text-red-700 shadow-sm p-6">
+          <p className="text-sm">
+            Unable to load dashboard data right now. Please refresh, or try again in a moment.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   /* ──────────────────────────────────────────────────────────────
      Derived metrics
@@ -288,7 +339,6 @@ if (!org) {
   const uniqueClientsToday = uniqueTodayPhones.length;
   const uniqueClientsAllTime = uniqueAllPhones.length;
 
-  // This week revenue & avg duration
   const estWeekCents = weekAppts.reduce(
     (sum: number, a: ApptLite) => sum + (a.service?.priceCents ?? 0),
     0,
@@ -331,10 +381,10 @@ if (!org) {
     })
     .sort((a: UtilRow, b: UtilRow) => b.pct - a.pct);
 
-  // Today schedule
+  // Today schedule (first 8)
   type TodayRow = { id: string; time: string; label: string; staff: string };
   const todaySchedule: TodayRow[] = weekAppts
-    .filter((a: ApptLite) => a.startsAt >= todayStart && a.startsAt <= todayEnd)
+    .filter((a: ApptLite) => a.startsAt >= startOfDay(now) && a.startsAt <= endOfDay(now))
     .sort((a: ApptLite, b: ApptLite) => a.startsAt.getTime() - b.startsAt.getTime())
     .slice(0, 8)
     .map((a: ApptLite): TodayRow => ({
@@ -355,11 +405,10 @@ if (!org) {
   // Weekly bookings line chart
   const bookingPoints: WeekPoint[] = bookingsPerWeek;
 
-  // Revenue area chart (we’ll reuse the component)
+  // Revenue area chart
   const revenuePoints: WeekPoint[] = revenuePerWeek;
 
-  // Retention %
-  // Approx: repeat phone numbers / total unique phones over last 90d
+  // Retention (repeat phones / unique last 90d)
   const phoneCounts = new Map<string, number>();
   for (const p of phones90d) {
     const key = (p.customerPhone || "").trim();
@@ -382,25 +431,24 @@ if (!org) {
     }
     return m;
   }
+
   const tThis = tallyServices(serviceThisWeek);
   const tLast = tallyServices(serviceLastWeek);
   const svcNames = Array.from(new Set<string>([...tThis.keys(), ...tLast.keys()]));
-  const svcCompare: CompareRow[] = svcNames.map((name: string): CompareRow => {
-    const last = tLast.get(name) ?? 0;
-    const ths = tThis.get(name) ?? 0;
-    const deltaPct = last === 0 ? (ths > 0 ? 100 : 0) : Math.round(((ths - last) / last) * 100);
-    return { service: name, last, this: ths, deltaPct };
-  }).sort((a, b) => (b.this - b.last) - (a.this - a.last));
+  const svcCompare: CompareRow[] = svcNames
+    .map((name: string): CompareRow => {
+      const last = tLast.get(name) ?? 0;
+      const ths = tThis.get(name) ?? 0;
+      const deltaPct = last === 0 ? (ths > 0 ? 100 : 0) : Math.round(((ths - last) / last) * 100);
+      return { service: name, last, this: ths, deltaPct };
+    })
+    .sort((a, b) => (b.this - b.last) - (a.this - a.last));
 
-  // Booking source trend (bar chart over last 8 weeks by "phone" only as sample)
-  // If you add per-source per-week later, adapt this array shape and reuse BarChart with stacks.
+  // Source phone trend (bar)
   const sourcePhoneTrend: WeekPoint[] = [];
   for (let i = weeksBack; i >= 0; i--) {
     const s = startOfWeeksAgo(now, i);
     const e = endOfWeeksAgo(now, i);
-    // count for source "phone"
-    // (If you want combined trend lines for "web" and "manual", repeat this fetch and render multiple bars/lines)
-    // keep the query in the loop to stay simple; small data scale at early stage
     // eslint-disable-next-line no-await-in-loop
     const count = await prisma.appointment.count({
       where: { orgId: org.id, source: "phone", startsAt: { gte: s, lte: e } },
@@ -410,20 +458,21 @@ if (!org) {
 
   // Source breakdown pie
   const totalSources = sourceBreakdown.reduce((s: number, x: SourceSlice) => s + x.count, 0);
-  const sourceWithAngles = totalSources
-    ? (() => {
-        let acc = 0;
-        return sourceBreakdown.map((s: SourceSlice) => {
-          const angle = (s.count / totalSources) * Math.PI * 2;
-          const start = acc;
-          const end = acc + angle;
-          acc = end;
-          return { ...s, start, end };
-        });
-      })()
-    : [];
+  const sourceWithAngles =
+    totalSources > 0
+      ? (() => {
+          let acc = 0;
+          return sourceBreakdown.map((s: SourceSlice) => {
+            const angle = (s.count / totalSources) * Math.PI * 2;
+            const start = acc;
+            const end = acc + angle;
+            acc = end;
+            return { ...s, start, end };
+          });
+        })()
+      : [];
 
-  // QA checks (tiny)
+  // QA checks
   const qaFindings: string[] = [];
   if (uniqueClientsAllTime && uniqueClientsAllTime < todayCount) {
     qaFindings.push("Unique-all-time < today's bookings — check duplicate phone handling.");
@@ -440,16 +489,14 @@ if (!org) {
   ─────────────────────────────────────────────────────────────── */
   return (
     <div className="space-y-8 pb-16">
-     {/* Header */}
-       <header>
-       <div className="flex items-center justify-between">
-       <div>
-       <h1 className="text-3xl font-semibold tracking-tight">{org.name} Dashboard</h1>
-       <p className="mt-1 text-sm text-zinc-600">Times shown in {TZ}.</p>
-       </div>
-       <LogoutButton />
-       </div>
-       </header>
+      {/* Header */}
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">{org.name} Dashboard</h1>
+          <p className="mt-1 text-sm text-zinc-600">Times shown in {TZ}.</p>
+        </div>
+        <LogoutButton />
+      </header>
 
       {/* KPI Cards */}
       <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -734,7 +781,7 @@ function RevenueAreaChart({
   }
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[180px]">
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[180px]" role="img" aria-label="Revenue trend">
       <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#e5e7eb" />
       <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="#e5e7eb" />
       <path d={areaD} fill="rgba(0,191,166,0.15)" />
@@ -774,7 +821,7 @@ function LineChart({ points, height = 160 }: { points: WeekPoint[]; height?: num
   }
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[180px]">
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[180px]" role="img" aria-label="Bookings trend">
       <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#e5e7eb" />
       <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="#e5e7eb" />
       <path d={lineD} stroke="#2563eb" strokeWidth="2" fill="none" />
@@ -806,7 +853,7 @@ function BarChart({ points, height = 160 }: { points: WeekPoint[]; height?: numb
   const toY = (v: number): number => height - padding - (v / maxY) * (height - padding * 2);
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[180px]">
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[180px]" role="img" aria-label="Phone source trend">
       <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#e5e7eb" />
       <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="#e5e7eb" />
       {points.map((p, i) => {
@@ -838,15 +885,15 @@ function Pie({
 
   const pathFor = (start: number, end: number): string => {
     const x1 = cx + r * Math.cos(start);
-    const y1 = cy + r * Math.sin(start);
+       const y1 = cy + r * Math.sin(start);
     const x2 = cx + r * Math.cos(end);
     const y2 = cy + r * Math.sin(end);
     const largeArc = end - start > Math.PI ? 1 : 0;
     return `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`;
-    };
+  };
 
   return (
-    <svg viewBox={`0 0 ${radius * 2} ${radius * 2}`} className="w-[140px] h-[140px]">
+    <svg viewBox={`0 0 ${radius * 2} ${radius * 2}`} className="w-[140px] h-[140px]" role="img" aria-label="Source breakdown">
       {slices.length === 0 ? (
         <circle cx={cx} cy={cy} r={r} fill="#e5e7eb" />
       ) : (
@@ -878,4 +925,3 @@ function weekLabel(s: Date): string {
 function sumValues(arr: WeekPoint[]): number {
   return arr.reduce((s: number, p: WeekPoint) => s + p.value, 0);
 }
-

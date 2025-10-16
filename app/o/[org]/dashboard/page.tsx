@@ -1,9 +1,15 @@
 // app/o/[org]/dashboard/page.tsx
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const dynamicParams = true;
+
 import { prisma } from "@/lib/db";
 import { auth } from "@/lib/auth";
 import { redirect, notFound } from "next/navigation";
 
-export const runtime = "nodejs";
+
+
 
 const TZ = "Pacific/Auckland";
 const NZ = "en-NZ";
