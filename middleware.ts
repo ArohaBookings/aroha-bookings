@@ -2,36 +2,16 @@
 export { default } from "next-auth/middleware";
 
 /**
- * Protect everything *except*:
+ * Protect everything except:
  * - NextAuth endpoints (/api/auth/**)
- * - Public APIs you expose to websites/Retell/Shopify
- * - Marketing/onboarding pages (/login, /register, /complete)
+ * - Public APIs (/api/public/**, /api/retell/**, /api/shopify/**, /api/dev/**)
  * - Public booking pages (/b/[slug])
+ * - Marketing/onboarding pages (/login, /register, /complete)
  * - Next static/image assets & common public files
- *
- * Anything not excluded below will require an authenticated session.
  */
 export const config = {
   matcher: [
-    // Protect all pages except the public ones listed in the negative lookahead:
-    // NOTE: order matters; this single regex keeps things simple and avoids overlaps.
-    '/((?!' +
-      [
-        'api/auth',        // NextAuth callbacks
-        'api/public',      // public JSON endpoints (availability/book)
-        'api/retell',      // Retell webhooks/functions
-        'api/shopify',     // Shopify webhooks
-        '_next/static',    // Next.js static files
-        '_next/image',     // Next.js image optimizer
-        'favicon.ico',
-        'robots.txt',
-        'sitemap.xml',
-        'manifest.webmanifest',
-        'login',           // sign-in page
-        'register',        // your onboarding
-        'complete',        // purchase-complete/token flow
-        'b/'               // public booking pages e.g. /b/salon-slug
-      ].join('|') +
-    ').*)',
+    // Negative lookahead: exclude listed prefixes/files, protect everything else.
+    '/((?!api/auth|api/public|api/retell|api/shopify|api/dev|_next/static|_next/image|favicon\\.ico|robots\\.txt|sitemap\\.xml|manifest\\.webmanifest|login|register|complete|b/).*)',
   ],
 };

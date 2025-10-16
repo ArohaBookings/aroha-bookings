@@ -8,8 +8,7 @@ import { authOptions } from "@/lib/auth";
 import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+
 
 export default async function RootLayout({
   children,

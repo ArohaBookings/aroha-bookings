@@ -17,9 +17,7 @@ import { FiltersBar, NewBookingButton, GridColumn, EditBookingPortal } from "./C
 import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-export const fetchCache = "force-no-store";
-export const revalidate = 0;
+
 /* ───────────────────────────────────────────────────────────────
    Types
    ─────────────────────────────────────────────────────────────── */

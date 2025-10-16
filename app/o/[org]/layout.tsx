@@ -6,8 +6,7 @@ import { redirect, notFound } from "next/navigation";
 import { getOrgBySlug, assertMembership } from "@/lib/org";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+
 
 /** SUPERADMIN helper (reads comma-separated emails from env) */
 function isSuperAdmin(email?: string | null) {
