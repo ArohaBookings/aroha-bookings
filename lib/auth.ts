@@ -46,8 +46,8 @@ type UserWithOptionalPassword = {
   id: string;
   email: string | null;
   name: string | null;
-  password?: string | null;         // present if you added `password String?` in schema
-  memberships?: MembershipLite[];   // included via query
+  password?: string | null;
+  memberships?: MembershipLite[];
 };
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -64,19 +64,13 @@ const providers: any[] = [
     async authorize(credentials) {
       const email = credentials?.email?.trim().toLowerCase() || "";
       const password = credentials?.password || "";
-
       if (!email || !password) throw new Error("Missing credentials");
 
-      // 1) Superadmin fast-path (shared password)
+      // Superadmin fast-path
       if (isSuperAdminEmail(email) && SUPERADMIN_PASSWORD && password === SUPERADMIN_PASSWORD) {
-        // ensure user exists for downstream relations
         const existing = await prisma.user.findUnique({ where: { email } });
         const userRow =
-          existing ??
-          (await prisma.user.create({
-            data: { email, name: "Superadmin" },
-          }));
-
+          existing ?? (await prisma.user.create({ data: { email, name: "Superadmin" } }));
         return {
           id: userRow.id,
           email: userRow.email!,
@@ -85,22 +79,17 @@ const providers: any[] = [
         };
       }
 
-      // 2) Normal user authentication
+      // Normal user
       const user = (await prisma.user.findUnique({
         where: { email },
         include: { memberships: { select: { orgId: true, role: true } } },
       })) as UserWithOptionalPassword | null;
 
-      if (!user || !user.password) {
-        // either no row or no local password set
-        throw new Error("Invalid email or password");
-      }
-
+      if (!user || !user.password) throw new Error("Invalid email or password");
       const valid = await compare(password, user.password);
       if (!valid) throw new Error("Invalid email or password");
 
       const role = user.memberships?.[0]?.role ?? null;
-
       return {
         id: user.id,
         email: user.email ?? undefined,
@@ -112,18 +101,12 @@ const providers: any[] = [
   }),
 ];
 
-// Optional magic-link email provider (only if env is present)
 if (EMAIL_SERVER && EMAIL_FROM) {
-  providers.push(
-    EmailProvider({
-      server: EMAIL_SERVER,
-      from: EMAIL_FROM,
-    })
-  );
+  providers.push(EmailProvider({ server: EMAIL_SERVER, from: EMAIL_FROM }));
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   NEXTAUTH OPTIONS (v4)
+   NEXTAUTH OPTIONS
 ──────────────────────────────────────────────────────────────────────────── */
 
 export const authOptions: NextAuthOptions = {
@@ -132,19 +115,25 @@ export const authOptions: NextAuthOptions = {
   providers,
   pages: {
     signIn: "/login",
+    error: "/login",
   },
 
+  // Let NextAuth trust Vercel preview hosts (prevents /login callback loops).
+  // The ts-ignore keeps older @types from complaining; runtime supports it.
+  // @ts-ignore
+  trustHost: true,
+
   callbacks: {
-    // Harden redirects to avoid infinite loops or open redirects
+    // Guard redirects to avoid login↔callback loop and open redirects
     async redirect({ url, baseUrl }) {
       try {
-        const target = new URL(url, baseUrl);
         const base = new URL(baseUrl);
+        const target = new URL(url, baseUrl);
 
-        // Only allow same-origin
+        // Same-origin only
         if (target.origin !== base.origin) return baseUrl;
 
-        // Avoid chaining redirect back to /login repeatedly
+        // If we’re already on /login (or pointing back to it), don’t keep bouncing
         if (target.pathname.startsWith("/login")) return baseUrl;
 
         return target.toString();
@@ -155,7 +144,6 @@ export const authOptions: NextAuthOptions = {
 
     async jwt({ token, user }) {
       const t = token as AppToken;
-
       if (user) {
         t.userId = (user as any).id ?? t.userId;
         t.email = (user as any).email ?? t.email;
@@ -164,27 +152,21 @@ export const authOptions: NextAuthOptions = {
         t.isSuperAdmin = Boolean((user as any).isSuperAdmin);
       }
 
-      // Refresh org memberships (cheap & safe)
       if (t.email) {
         try {
           const memberships = (await prisma.membership.findMany({
             where: { user: { email: t.email } },
             select: { orgId: true, role: true },
           })) as MembershipLite[];
-
           t.orgIds = memberships.map((m) => m.orgId);
           t.orgCount = t.orgIds.length;
-        } catch {
-          // swallow db errors so auth never breaks
-        }
+        } catch {}
       }
-
       return t;
     },
 
     async session({ session, token }: { session: Session; token: JWT }) {
       const t = token as AppToken;
-
       (session as any).userId = t.userId ?? null;
       (session as any).isSuperAdmin = Boolean(t.isSuperAdmin);
       (session as any).role = t.role ?? null;
@@ -195,12 +177,10 @@ export const authOptions: NextAuthOptions = {
         session.user.email = t.email ?? session.user.email;
         session.user.name = t.name ?? session.user.name;
       }
-
       return session;
     },
   },
 
-  // v4: do NOT set `trustHost`. Keep your secret configured in env.
   secret: process.env.NEXTAUTH_SECRET,
 };
 
