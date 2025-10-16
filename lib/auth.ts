@@ -8,17 +8,15 @@ import type { JWT } from "next-auth/jwt";
 import { compare } from "bcryptjs";
 import { prisma } from "@/lib/db";
 
-/* ────────────────────────────────────────────────────────────────────────────
+/* ───────────────────────────────────────────────────────────────
    ENV / CONFIG
-──────────────────────────────────────────────────────────────────────────── */
-
+────────────────────────────────────────────────────────────── */
 const SUPERADMINS: string[] = (process.env.SUPERADMINS || "")
   .split(",")
   .map((e) => e.trim().toLowerCase())
   .filter(Boolean);
 
 const SUPERADMIN_PASSWORD = (process.env.SUPERADMIN_PASSWORD || "").trim();
-
 const EMAIL_SERVER = (process.env.EMAIL_SERVER || "").trim(); // optional
 const EMAIL_FROM = (process.env.EMAIL_FROM || "").trim();     // optional
 
@@ -26,10 +24,9 @@ export function isSuperAdminEmail(email?: string | null): boolean {
   return !!email && SUPERADMINS.includes(email.trim().toLowerCase());
 }
 
-/* ────────────────────────────────────────────────────────────────────────────
-   LOCAL TYPES (no @prisma/client imports required)
-──────────────────────────────────────────────────────────────────────────── */
-
+/* ───────────────────────────────────────────────────────────────
+   LOCAL TYPES (no @prisma/client imports → safe for edge/node)
+────────────────────────────────────────────────────────────── */
 type MembershipLite = { orgId: string; role?: string | null };
 
 type AppToken = JWT & {
@@ -50,11 +47,10 @@ type UserWithOptionalPassword = {
   memberships?: MembershipLite[];
 };
 
-/* ────────────────────────────────────────────────────────────────────────────
-   PROVIDERS
-──────────────────────────────────────────────────────────────────────────── */
-
-const providers: any[] = [
+/* ───────────────────────────────────────────────────────────────
+   PROVIDERS (built immutably so TS doesn’t flag tuple/readonly)
+────────────────────────────────────────────────────────────── */
+const providers = [
   CredentialsProvider({
     name: "Credentials",
     credentials: {
@@ -69,8 +65,7 @@ const providers: any[] = [
       // Superadmin fast-path
       if (isSuperAdminEmail(email) && SUPERADMIN_PASSWORD && password === SUPERADMIN_PASSWORD) {
         const existing = await prisma.user.findUnique({ where: { email } });
-        const userRow =
-          existing ?? (await prisma.user.create({ data: { email, name: "Superadmin" } }));
+        const userRow = existing ?? (await prisma.user.create({ data: { email, name: "Superadmin" } }));
         return {
           id: userRow.id,
           email: userRow.email!,
@@ -86,6 +81,7 @@ const providers: any[] = [
       })) as UserWithOptionalPassword | null;
 
       if (!user || !user.password) throw new Error("Invalid email or password");
+
       const valid = await compare(password, user.password);
       if (!valid) throw new Error("Invalid email or password");
 
@@ -99,51 +95,48 @@ const providers: any[] = [
       };
     },
   }),
+  ...(EMAIL_SERVER && EMAIL_FROM
+    ? [EmailProvider({ server: EMAIL_SERVER, from: EMAIL_FROM })]
+    : []),
 ];
 
-if (EMAIL_SERVER && EMAIL_FROM) {
-  providers.push(EmailProvider({ server: EMAIL_SERVER, from: EMAIL_FROM }));
-}
-
-/* ────────────────────────────────────────────────────────────────────────────
-   NEXTAUTH OPTIONS
-──────────────────────────────────────────────────────────────────────────── */
-
+/* ───────────────────────────────────────────────────────────────
+   NEXTAUTH OPTIONS (single, correct object)
+────────────────────────────────────────────────────────────── */
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
-  session: { strategy: "jwt" },
   providers,
+  session: { strategy: "jwt" },
+
+  // Prevents callback redirect loops on preview/alt hosts
+  // @ts-ignore runtime supports this even if older types complain
+  trustHost: true,
+
   pages: {
     signIn: "/login",
     error: "/login",
   },
 
-  // Let NextAuth trust Vercel preview hosts (prevents /login callback loops).
-  // The ts-ignore keeps older @types from complaining; runtime supports it.
-  // @ts-ignore
-  trustHost: true,
+  secret: process.env.NEXTAUTH_SECRET,
 
   callbacks: {
-    // Guard redirects to avoid login↔callback loop and open redirects
+    /* Safe redirects (no open redirects / loops) */
     async redirect({ url, baseUrl }) {
       try {
         const base = new URL(baseUrl);
         const target = new URL(url, baseUrl);
-
-        // Same-origin only
-        if (target.origin !== base.origin) return baseUrl;
-
-        // If we’re already on /login (or pointing back to it), don’t keep bouncing
-        if (target.pathname.startsWith("/login")) return baseUrl;
-
+        if (target.origin !== base.origin) return baseUrl;      // same-origin only
+        if (target.pathname.startsWith("/login")) return baseUrl; // avoid /login↔callback loops
         return target.toString();
       } catch {
         return baseUrl;
       }
     },
 
+    /* Extend JWT with app data */
     async jwt({ token, user }) {
       const t = token as AppToken;
+
       if (user) {
         t.userId = (user as any).id ?? t.userId;
         t.email = (user as any).email ?? t.email;
@@ -157,16 +150,22 @@ export const authOptions: NextAuthOptions = {
           const memberships = (await prisma.membership.findMany({
             where: { user: { email: t.email } },
             select: { orgId: true, role: true },
-          })) as MembershipLite[];
+          })) as Array<{ orgId: string; role: string | null }>;
           t.orgIds = memberships.map((m) => m.orgId);
-          t.orgCount = t.orgIds.length;
-        } catch {}
+          t.orgCount = memberships.length;
+        } catch (e) {
+          // Don’t crash session if DB is empty or schema in flux
+          console.error("Membership fetch failed:", e);
+        }
       }
+
       return t;
     },
 
+    /* Extend session object for the client */
     async session({ session, token }: { session: Session; token: JWT }) {
       const t = token as AppToken;
+
       (session as any).userId = t.userId ?? null;
       (session as any).isSuperAdmin = Boolean(t.isSuperAdmin);
       (session as any).role = t.role ?? null;
@@ -177,17 +176,15 @@ export const authOptions: NextAuthOptions = {
         session.user.email = t.email ?? session.user.email;
         session.user.name = t.name ?? session.user.name;
       }
+
       return session;
     },
   },
-
-  secret: process.env.NEXTAUTH_SECRET,
 };
 
-/* ────────────────────────────────────────────────────────────────────────────
-   SERVER HELPER
-──────────────────────────────────────────────────────────────────────────── */
-
+/* ───────────────────────────────────────────────────────────────
+   SERVER HELPER (use in Server Components / actions)
+────────────────────────────────────────────────────────────── */
 export async function auth() {
   return getServerSession(authOptions);
 }

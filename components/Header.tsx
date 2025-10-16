@@ -1,18 +1,29 @@
 // components/Header.tsx
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import Link from "next/link";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { unstable_noStore as noStore } from "next/cache";
 
-// Server Component (no client JS needed)
 export default async function Header() {
-  const session = await getServerSession(authOptions);
-  const email = session?.user?.email ?? "";
-  const name  = session?.user?.name ?? "";
+  // Never cache this — always reflect current auth state
+  noStore();
 
-  // Display name preference: name → email → generic
+  let email = "";
+  let name = "";
+  try {
+    const session = await getServerSession(authOptions);
+    email = session?.user?.email ?? "";
+    name = session?.user?.name ?? "";
+  } catch {
+    // swallow session errors so header still renders
+  }
+
   const display = (name || email || "there").trim();
 
-  // Defensive initials (supports unicode, limits to 2 chars)
+  // defensive/Unicode-friendly initials (max 2)
   const initials =
     (name || email)
       .split(/[^\p{L}\p{N}]+/u)
@@ -24,20 +35,26 @@ export default async function Header() {
   const isAuthed = Boolean(email);
 
   return (
-    <header className="sticky top-0 z-40 h-14 border-b border-zinc-200 bg-white/80 backdrop-blur">
+    <header
+      className="sticky top-0 z-40 h-14 border-b border-zinc-200 bg-white/80 backdrop-blur"
+      role="banner"
+    >
       <div className="mx-auto flex h-full w-full max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
         {/* Brand + public nav */}
         <div className="flex items-center gap-4">
           <Link
             href="/"
             className="font-semibold tracking-tight text-zinc-900 hover:text-zinc-700"
-            aria-label="Aroha Bookings home"
+            aria-label="Aroha Bookings — Home"
           >
             Aroha Bookings
           </Link>
 
           {/* Public links (hidden on small screens) */}
-          <nav className="hidden lg:flex items-center gap-4 text-sm text-zinc-600">
+          <nav
+            className="hidden lg:flex items-center gap-4 text-sm text-zinc-600"
+            aria-label="Primary"
+          >
             <Link href="/#how-it-works" className="hover:text-zinc-900">
               How it works
             </Link>
@@ -53,10 +70,10 @@ export default async function Header() {
         {/* Right side: auth controls */}
         {!isAuthed ? (
           <div className="flex items-center gap-3">
-            {/* Keep login simple — no callbackUrl */}
             <Link
               href="/login"
               className="px-3 py-1.5 rounded border border-zinc-300 text-sm hover:bg-zinc-50"
+              aria-label="Log in"
             >
               Log in
             </Link>
@@ -80,7 +97,7 @@ export default async function Header() {
               </span>
             </div>
 
-            {/* Fast access into the app when signed in */}
+            {/* Quick app access */}
             <Link
               href="/dashboard"
               className="hidden sm:inline-flex px-3 py-1.5 rounded border border-zinc-300 text-sm hover:bg-zinc-50"
@@ -98,10 +115,13 @@ export default async function Header() {
         )}
       </div>
 
-      {/* Mobile utility row (optional, only when authed) */}
+      {/* Mobile utility row (only when authed) */}
       {isAuthed && (
         <div className="lg:hidden border-t border-zinc-200 bg-white">
-          <nav className="mx-auto flex max-w-7xl items-center gap-2 overflow-x-auto px-4 py-2 text-sm">
+          <nav
+            className="mx-auto flex max-w-7xl items-center gap-2 overflow-x-auto px-4 py-2 text-sm"
+            aria-label="App"
+          >
             <Link href="/dashboard" className="px-2 py-1 rounded hover:bg-zinc-50">
               Dashboard
             </Link>

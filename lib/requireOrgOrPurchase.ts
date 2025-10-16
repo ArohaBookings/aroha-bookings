@@ -1,10 +1,13 @@
 // lib/requireOrgOrPurchase.ts
-import { prisma } from "@/lib/db";
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { redirect } from "next/navigation";
-import { Prisma } from "@prisma/client"; // ✅ Single correct import for both enums + types
+import { Prisma } from "@prisma/client";
+import { prisma } from "@/lib/db";
+import { authOptions } from "@/lib/auth";
 
+/* ───────────────────────────────────────────────────────────────
+   Types
+─────────────────────────────────────────────────────────────── */
 export type RequireResult = {
   isSuperAdmin: boolean;
   org: { id: string; name: string; slug: string } | null;
@@ -12,8 +15,28 @@ export type RequireResult = {
   purchaseToken: string | null;
 };
 
-/** SUPERADMIN list from env. Example: SUPERADMINS="you@domain.com,support@arohacalls.com" */
-function isSuperAdmin(email?: string | null): boolean {
+export type RequireOpts = {
+  /**
+   * Allow a signed-in user to proceed even if they don’t have an org
+   * or purchase token yet (e.g. for /dashboard).
+   * Defaults to false (strict).
+   */
+  allowWithoutOrg?: boolean;
+
+  /**
+   * If user is missing an org and not superadmin:
+   *  - when allowWithoutOrg=false → redirectToIfNoOrg (default: "/unauthorized")
+   *  - when allowWithoutOrg=true  → do NOT redirect; caller can render “no org” UI
+   */
+  redirectToIfNoOrg?: string;
+};
+
+/* ───────────────────────────────────────────────────────────────
+   SUPERADMIN helpers
+─────────────────────────────────────────────────────────────── */
+
+/** SUPERADMIN list from env: SUPERADMINS="you@domain.com,admin@company.com" */
+function isSuperAdminEmail(email?: string | null): boolean {
   if (!email) return false;
   const list = (process.env.SUPERADMINS || "")
     .split(",")
@@ -22,7 +45,6 @@ function isSuperAdmin(email?: string | null): boolean {
   return list.includes(email.toLowerCase());
 }
 
-/** Normalize a name to a slug; adds a numeric suffix if needed */
 function toSlug(base: string): string {
   const s = base
     .toLowerCase()
@@ -33,31 +55,27 @@ function toSlug(base: string): string {
 }
 
 /**
- * Ensure a superadmin has at least one Owner membership.
- * - Creates (or reuses) a single “HQ” organization.
- * - Ensures the user exists and is Owner in that org.
- * - Idempotent & safe under concurrency via upserts/transactions.
+ * Ensure a superadmin has a stable Owner membership in a single HQ org.
+ * Idempotent & concurrency-safe.
  */
 async function ensureSuperadminOrg(email: string) {
   const defaultName = process.env.SUPERADMIN_ORG_NAME?.trim() || "Aroha HQ";
   const defaultSlugBase = process.env.SUPERADMIN_ORG_SLUG?.trim() || "aroha-hq";
-  const slugCandidate = toSlug(defaultSlugBase);
+  const slugBase = toSlug(defaultSlugBase);
 
-  const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-    // 1) Ensure org exists (try exact slug first; if taken, generate a suffix)
-    let org = await tx.organization.findUnique({ where: { slug: slugCandidate } });
-
-    if (!org) {
+  const { org, membership } = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    // 1) Find or create the HQ org
+    let orgRow = await tx.organization.findUnique({ where: { slug: slugBase } });
+    if (!orgRow) {
       let attempt = 0;
-      let slug = slugCandidate;
-
+      let slug = slugBase;
       while (attempt < 5) {
         try {
-          org = await tx.organization.create({
+          orgRow = await tx.organization.create({
             data: {
               name: defaultName,
               slug,
-              // ✅ Reference enum safely through Prisma namespace
+              // Use enum safely; fall back to string if your schema differs
               plan: (Prisma as any)?.Plan?.PREMIUM ?? "PREMIUM",
               smsActive: false,
               dashboardConfig: {},
@@ -66,65 +84,62 @@ async function ensureSuperadminOrg(email: string) {
           break;
         } catch (e) {
           attempt += 1;
-          slug = `${slugCandidate}-${attempt}`;
+          slug = `${slugBase}-${attempt}`;
           if (attempt >= 5) throw e;
         }
       }
     }
 
-    // 2) Ensure user exists
+    // 2) Ensure user
     const user = await tx.user.upsert({
       where: { email },
       update: {},
       create: { email, name: "Superadmin" },
     });
 
-    // 3) Ensure membership as owner
-    let membership = await tx.membership.findFirst({
-      where: { userId: user.id, orgId: org!.id },
-    });
-
-    if (!membership) {
-      membership = await tx.membership.create({
-        data: { userId: user.id, orgId: org!.id, role: "owner" },
-      });
-    } else if (membership.role !== "owner") {
-      membership = await tx.membership.update({
-        where: { id: membership.id },
-        data: { role: "owner" },
-      });
+    // 3) Ensure Owner membership
+    let m = await tx.membership.findFirst({ where: { userId: user.id, orgId: orgRow!.id } });
+    if (!m) {
+      m = await tx.membership.create({ data: { userId: user.id, orgId: orgRow!.id, role: "owner" } });
+    } else if (m.role !== "owner") {
+      m = await tx.membership.update({ where: { id: m.id }, data: { role: "owner" } });
     }
 
-    return { org: org!, membership };
+    return { org: orgRow!, membership: m };
   });
 
-  return result;
+  return { org, membership };
 }
 
+/* ───────────────────────────────────────────────────────────────
+   Public API
+─────────────────────────────────────────────────────────────── */
+
 /**
- * Ensures the current signed-in user either:
- *  - belongs to an org (returns it), OR
- *  - has a valid purchase token (so UI can send them to /register?token=...), OR
- *  - is a SUPERADMIN (auto-ensure an Owner org and return it).
- *
- * Otherwise redirects to /unauthorized.
+ * Require session + (org OR purchase token).
+ * - Superadmins always allowed (and auto-ensured into HQ org).
+ * - Normal users:
+ *     - If `allowWithoutOrg=true`, return with `org=null` (caller can show “create org / purchase” UI)
+ *     - Else, redirect to `redirectToIfNoOrg` (default /unauthorized) when missing org & token
  */
-export async function requireOrgOrPurchase(): Promise<RequireResult> {
+export async function requireOrgOrPurchase(opts: RequireOpts = {}): Promise<RequireResult> {
+  const { allowWithoutOrg = false, redirectToIfNoOrg = "/unauthorized" } = opts;
+
+  // 1) Must be signed in
   const session = await getServerSession(authOptions);
   const email = session?.user?.email ?? null;
   if (!email) redirect("/login");
 
-  // ── SUPERADMIN BYPASS ─────────────────────────────────────────
-  if (isSuperAdmin(email)) {
+  // 2) Superadmin bypass
+  if (isSuperAdminEmail(email)) {
     const existing = await prisma.membership.findFirst({
       where: { user: { email } },
       include: { org: true },
     });
 
-    const ensured =
-      existing?.org
-        ? { org: existing.org, membership: { id: existing.id } }
-        : await ensureSuperadminOrg(email);
+    const ensured = existing?.org
+      ? { org: existing.org, membership: { id: existing.id } }
+      : await ensureSuperadminOrg(email);
 
     return {
       isSuperAdmin: true,
@@ -136,7 +151,7 @@ export async function requireOrgOrPurchase(): Promise<RequireResult> {
     };
   }
 
-  // ── NORMAL FLOW: has an org already? ─────────────────────────
+  // 3) Normal user: do they have an org already?
   const membership = await prisma.membership.findFirst({
     where: { user: { email } },
     include: { org: true },
@@ -151,7 +166,7 @@ export async function requireOrgOrPurchase(): Promise<RequireResult> {
     };
   }
 
-  // ── Otherwise: look for an active purchase token ─────────────
+  // 4) No org: do they have a valid purchase token?
   const purchase = await prisma.checkoutToken.findFirst({
     where: {
       email,
@@ -171,5 +186,31 @@ export async function requireOrgOrPurchase(): Promise<RequireResult> {
     };
   }
 
-  redirect("/unauthorized");
+  // 5) Still no org/purchase: optionally allow (for routes like /dashboard)
+  if (allowWithoutOrg) {
+    return {
+      isSuperAdmin: false,
+      org: null,
+      membershipId: null,
+      purchaseToken: null,
+    };
+  }
+
+  // Otherwise, block
+  redirect(redirectToIfNoOrg);
 }
+
+/* ───────────────────────────────────────────────────────────────
+   Usage notes
+─────────────────────────────────────────────────────────────── */
+/**
+ * Example — /app/dashboard/page.tsx:
+ *
+ *   const { org, isSuperAdmin } = await requireOrgOrPurchase({ allowWithoutOrg: true });
+ *   // You can render the dashboard even if org === null for normal users.
+ *
+ * Example — /app/calendar/page.tsx (strict):
+ *
+ *   const { org } = await requireOrgOrPurchase();
+ *   // If they don’t have org or purchase, they’ll be redirected away.
+ */

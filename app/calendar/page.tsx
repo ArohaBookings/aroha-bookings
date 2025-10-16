@@ -20,7 +20,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { FiltersBar, NewBookingButton, GridColumn, EditBookingPortal } from "./ClientIslands";
 import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
-
+import { unstable_noStore as noStore } from "next/cache";
 
 /* ───────────────────────────────────────────────────────────────
    Types
@@ -241,61 +241,55 @@ export async function cancelBooking(formData: FormData): Promise<{ ok: boolean; 
 /* ───────────────────────────────────────────────────────────────
    Page (server component)
    ─────────────────────────────────────────────────────────────── */
-
 export default async function CalendarPage({
   searchParams,
 }: {
-  searchParams?: { view?: ViewMode; date?: string; q?: string; staff?: string; tz?: "org" | "local" };
+  searchParams: Promise<{
+    view?: ViewMode;
+    date?: string;
+    q?: string;
+    staff?: string;
+    tz?: "org" | "local";
+  }>;
 }) {
-  // auth + org
-// ───────────────── auth + purchase + org gating ─────────────────
-const sp = searchParams ?? {};
+  // Always await searchParams on Next 15+
+  const sp = (await searchParams) ?? {};
 
-let org: OrgRow | null = null;
-let hasPurchase = false;
+    // never cache: always render with fresh session/org data
+  noStore();
 
-try {
-  // Prefer your helper if it's wired up
-  const res = await requireOrgOrPurchase();
-  org = (res as any)?.org ?? null;
-  hasPurchase = !!(res as any)?.hasPurchase;
-} catch {
-  // Fallback so the page still works without the helper
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.email) {
-    redirect("/api/auth/signin");
+  // ───────────────── auth + purchase + org gating ─────────────────
+  const gate = await requireOrgOrPurchase();
+  const isSuperAdmin = !!gate.isSuperAdmin;
+  const org = (gate.org as OrgRow | null) ?? null;
+
+  // hasPurchase means: they either completed onboarding (have org) OR still have an active purchase token
+  const hasPurchase = Boolean(org || gate.purchaseToken);
+
+  // Only Superadmins bypass the paywall
+  if (!isSuperAdmin && !hasPurchase) {
+    redirect("/?purchase=required");
   }
-  const user = await prisma.user.findUnique({
-    where: { email: session.user.email },
-    include: { memberships: { include: { org: true } } },
-  });
-  org = (user?.memberships?.[0]?.org as OrgRow) ?? null;
-  hasPurchase = false; // adjust when you wire purchase checks server-side
-}
 
-// Not a paying customer → bounce to marketing/landing
-if (!hasPurchase) {
-  redirect("/?purchase=required");
-}
+  // If they purchased but haven't created an org yet, nudge to onboarding
+  if (!org) {
+    return (
+      <div className="p-6">
+        <h1 className="text-2xl font-semibold tracking-tight">Calendar</h1>
+        <p className="mt-2 text-sm text-zinc-600">
+          Thanks for purchasing Aroha Bookings. Finish setup on{" "}
+          <a className="underline" href="/onboarding">the onboarding page</a> to create your organisation.
+        </p>
+      </div>
+    );
+  }
 
-// Purchased but no org yet → nudge to onboarding (and avoid touching org props)
-if (!org) {
-  return (
-    <div className="p-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Calendar</h1>
-      <p className="mt-2 text-sm text-zinc-600">
-        Thanks for purchasing Aroha Bookings. Finish setup on{" "}
-        <a className="underline" href="/onboarding">the onboarding page</a> to create your organisation.
-      </p>
-    </div>
-  );
-}
-// ───────────────── from here on, `org` is guaranteed ────────────
+  // ───────────────── from here on, `org` is guaranteed ────────────
+  const view: ViewMode = sp.view === "day" ? "day" : "week";
+  const baseDate = parseDateParam(sp.date);
+  const tzPref: "org" | "local" = sp.tz === "local" ? "local" : "org";
+  const activeTZ = tzPref === "org" ? org.timezone : undefined; // undefined → local TZ
 
-const view: ViewMode = sp.view === "day" ? "day" : "week";
-const baseDate = parseDateParam(sp.date);
-const tzPref = sp.tz === "local" ? "local" : "org";
-const activeTZ = tzPref === "org" ? org.timezone : undefined; // undefined → local TZ
 
   // Configurable window
   const SLOT_MIN = 30; // minutes
@@ -311,18 +305,31 @@ const activeTZ = tzPref === "org" ? org.timezone : undefined; // undefined → l
     { weekday: 6, openMin: 0, closeMin: 0 },
     { weekday: 0, openMin: 0, closeMin: 0 },
   ];
-  const hoursRows =
-    (await prisma.openingHours.findMany({
+
+  let hoursRows:
+    | Array<{ weekday: number; openMin: number; closeMin: number }>
+    | null = null;
+
+  try {
+    hoursRows = await prisma.openingHours.findMany({
       where: { orgId: org.id },
       orderBy: { weekday: "asc" },
-    })) ?? [];
-  const hours = hoursRows.length ? hoursRows : defaultHours();
+    });
+  } catch {
+    hoursRows = null;
+  }
+
+  const hours = (hoursRows && hoursRows.length ? hoursRows : defaultHours()) as Array<{
+    weekday: number;
+    openMin: number;
+    closeMin: number;
+  }>;
 
   const getHoursFor = (d: Date): { openMin: number; closeMin: number } => {
-    const row = hours.find((h: { weekday: number }) => h.weekday === d.getDay());
+    const row = hours.find((h) => h.weekday === d.getDay());
     return {
-      openMin: (row?.openMin ?? 9 * 60) as number,
-      closeMin: (row?.closeMin ?? 18 * 60) as number,
+      openMin: Number(row?.openMin ?? 9 * 60),
+      closeMin: Number(row?.closeMin ?? 18 * 60),
     };
   };
 
@@ -337,36 +344,44 @@ const activeTZ = tzPref === "org" ? org.timezone : undefined; // undefined → l
   const q = (sp?.q || "").trim().toLowerCase();
   const staffFilter = (sp?.staff || "").trim();
 
-  // Data (scoped by org)
-  const [staff, services, apptsRaw] = await Promise.all([
-    prisma.staffMember.findMany({
-      where: { orgId: org.id, active: true },
-      orderBy: { name: "asc" },
-      select: { id: true, name: true, active: true },
-    }),
-    prisma.service.findMany({
-      where: { orgId: org.id },
-      orderBy: { name: "asc" },
-      select: { id: true, name: true, durationMin: true, priceCents: true },
-    }),
-    prisma.appointment.findMany({
-      where: {
-        orgId: org.id,
-        startsAt: { gte: rangeStart, lt: rangeEnd },
-        ...(q
-          ? {
-              OR: [
-                { customerName: { contains: q, mode: "insensitive" } },
-                { customerPhone: { contains: q, mode: "insensitive" } },
-              ],
-            }
-          : {}),
-        ...(staffFilter ? { staffId: staffFilter } : {}),
-      },
-      include: { staff: true, service: true },
-      orderBy: { startsAt: "asc" },
-    }),
-  ]);
+  // Data (scoped by org) — guard with try/catch so empty DBs don’t crash
+  let staff: StaffRow[] = [];
+  let services: ServiceRow[] = [];
+  let apptsRaw: ApptRow[] = [];
+
+  try {
+    [staff, services, apptsRaw] = (await Promise.all([
+      prisma.staffMember.findMany({
+        where: { orgId: org.id, active: true },
+        orderBy: { name: "asc" },
+        select: { id: true, name: true, active: true },
+      }),
+      prisma.service.findMany({
+        where: { orgId: org.id },
+        orderBy: { name: "asc" },
+        select: { id: true, name: true, durationMin: true, priceCents: true },
+      }),
+      prisma.appointment.findMany({
+        where: {
+          orgId: org.id,
+          startsAt: { gte: rangeStart, lt: rangeEnd },
+          ...(q
+            ? {
+                OR: [
+                  { customerName: { contains: q, mode: "insensitive" } },
+                  { customerPhone: { contains: q, mode: "insensitive" } },
+                ],
+              }
+            : {}),
+          ...(staffFilter ? { staffId: staffFilter } : {}),
+        },
+        include: { staff: true, service: true },
+        orderBy: { startsAt: "asc" },
+      }),
+    ])) as [StaffRow[], ServiceRow[], ApptRow[]];
+  } catch {
+    // leave arrays empty; UI will show empty states
+  }
 
   const DAY_START_H = Math.floor(getHoursFor(baseDate).openMin / 60);
   const DAY_END_H = Math.ceil(getHoursFor(baseDate).closeMin / 60);
@@ -390,7 +405,9 @@ const activeTZ = tzPref === "org" ? org.timezone : undefined; // undefined → l
     for (const a of appts) {
       const dIdx = (a.startsAt.getDay() + 6) % 7; // Mon=0
       const hoursForDay = getHoursFor(addDays(weekStart, dIdx));
-      const dayStartCalc = new Date(startOfDay(addDays(weekStart, dIdx)).getTime() + hoursForDay.openMin * 60000);
+      const dayStartCalc = new Date(
+        startOfDay(addDays(weekStart, dIdx)).getTime() + hoursForDay.openMin * 60000
+      );
       const topMin = Math.max(0, minutesBetween(dayStartCalc, a.startsAt));
       const durMin = Math.max(10, minutesBetween(a.startsAt, a.endsAt));
       const top = (topMin / SLOT_MIN) * PX_PER_SLOT;
@@ -419,7 +436,9 @@ const activeTZ = tzPref === "org" ? org.timezone : undefined; // undefined → l
     for (const a of appts) {
       if (!a.staffId || !dayBlocksByStaff[a.staffId]) continue;
       const hoursForDay = getHoursFor(baseDate);
-      const dayStartCalc = new Date(startOfDay(baseDate).getTime() + hoursForDay.openMin * 60000);
+      const dayStartCalc = new Date(
+        startOfDay(baseDate).getTime() + hoursForDay.openMin * 60000
+      );
       const topMin = Math.max(0, minutesBetween(dayStartCalc, a.startsAt));
       const durMin = Math.max(10, minutesBetween(a.startsAt, a.endsAt));
       const top = (topMin / SLOT_MIN) * PX_PER_SLOT;
@@ -442,28 +461,33 @@ const activeTZ = tzPref === "org" ? org.timezone : undefined; // undefined → l
   }
 
   // Navigation URLs
-const prevDate = addDays(baseDate, view === "day" ? -1 : -7);
-const nextDate = addDays(baseDate, view === "day" ?  1 :  7);
+  const prevDate = addDays(baseDate, view === "day" ? -1 : -7);
+  const nextDate = addDays(baseDate, view === "day" ? 1 : 7);
   const today = new Date();
   const mkHref = (d: Date, v: ViewMode, extra?: Record<string, string>) => {
-  const params = new URLSearchParams({
-    view: v,
-    date: isoDateOnlyLocal(d), // ✅ use the local-safe version
-    ...(q ? { q } : {}),
-    ...(staffFilter ? { staff: staffFilter } : {}),
-    tz: tzPref,
-    ...(extra || {}),
-  }).toString();
-  return `/calendar?${params}`;
-};
-
+    const params = new URLSearchParams({
+      view: v,
+      date: isoDateOnlyLocal(d),
+      ...(q ? { q } : {}),
+      ...(staffFilter ? { staff: staffFilter } : {}),
+      tz: tzPref,
+      ...(extra || {}),
+    }).toString();
+    return `/calendar?${params}`;
+  };
 
   // quick overlap detector (same staff)
   function overlaps(
     a: { startsAt: Date; endsAt: Date; staffId: string | null },
     b: { startsAt: Date; endsAt: Date; staffId: string | null }
   ) {
-    return a.staffId && b.staffId && a.staffId === b.staffId && a.startsAt < b.endsAt && b.startsAt < a.endsAt;
+    return (
+      a.staffId &&
+      b.staffId &&
+      a.staffId === b.staffId &&
+      a.startsAt < b.endsAt &&
+      b.startsAt < a.endsAt
+    );
   }
   const overlapWarnings: Array<{ idA: string; idB: string }> = [];
   for (let i = 0; i < appts.length; i++) {
@@ -482,21 +506,35 @@ const nextDate = addDays(baseDate, view === "day" ?  1 :  7);
           <h1 className="text-3xl font-bold tracking-tight">Calendar</h1>
           <p className="text-sm text-zinc-500 mt-1">
             {view === "week" ? (
-              <>Week of {fmtDay(weekStart, activeTZ)} – {fmtDay(addDays(weekStart, 6), activeTZ)}</>
+              <>
+                Week of {fmtDay(weekStart, activeTZ)} –{" "}
+                {fmtDay(addDays(weekStart, 6), activeTZ)}
+              </>
             ) : (
-              <>{DAY_LABEL[(baseDate.getDay() + 6) % 7]} • {fmtDay(baseDate, activeTZ)}</>
+              <>
+                {DAY_LABEL[(baseDate.getDay() + 6) % 7]} • {fmtDay(baseDate, activeTZ)}
+              </>
             )}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Link className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50" href={mkHref(prevDate, view)}>
+          <Link
+            className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50"
+            href={mkHref(prevDate, view)}
+          >
             ← Prev
           </Link>
-          <Link className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50" href={mkHref(today, view)}>
+          <Link
+            className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50"
+            href={mkHref(today, view)}
+          >
             Today
           </Link>
-          <Link className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50" href={mkHref(nextDate, view)}>
+          <Link
+            className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50"
+            href={mkHref(nextDate, view)}
+          >
             Next →
           </Link>
 
@@ -505,7 +543,9 @@ const nextDate = addDays(baseDate, view === "day" ?  1 :  7);
           <Link
             href={mkHref(baseDate, "week")}
             className={`rounded-md px-3 py-1.5 text-sm border ${
-              view === "week" ? "bg-indigo-600 text-white border-indigo-600" : "bg-white border-zinc-300 hover:bg-zinc-50"
+              view === "week"
+                ? "bg-indigo-600 text-white border-indigo-600"
+                : "bg-white border-zinc-300 hover:bg-zinc-50"
             }`}
           >
             Week
@@ -513,7 +553,9 @@ const nextDate = addDays(baseDate, view === "day" ?  1 :  7);
           <Link
             href={mkHref(baseDate, "day")}
             className={`rounded-md px-3 py-1.5 text-sm border ${
-              view === "day" ? "bg-indigo-600 text-white border-indigo-600" : "bg-white border-zinc-300 hover:bg-zinc-50"
+              view === "day"
+                ? "bg-indigo-600 text-white border-indigo-600"
+                : "bg-white border-zinc-300 hover:bg-zinc-50"
             }`}
           >
             Day
@@ -522,15 +564,15 @@ const nextDate = addDays(baseDate, view === "day" ?  1 :  7);
           <div className="w-px h-6 bg-zinc-300 mx-1" />
 
           {/* filters/search — client island */}
-         <FiltersBar
-         orgTZ={org.timezone}
-         activeTZ={tzPref}
-         staff={staff}
-         services={services}
-         searchQuery={q}
-         staffFilter={staffFilter}
-         appts={appts}
-         />
+          <FiltersBar
+            orgTZ={org.timezone}
+            activeTZ={tzPref}
+            staff={staff}
+            services={services}
+            searchQuery={q}
+            staffFilter={staffFilter}
+            appts={appts}
+          />
 
           <NewBookingButton
             staff={staff}
@@ -546,55 +588,77 @@ const nextDate = addDays(baseDate, view === "day" ?  1 :  7);
           ⚠️ Potential double-bookings detected ({overlapWarnings.length}). Check staff allocations.
         </div>
       )}
-{/* Calendar shell */}
-<div className="relative border border-zinc-200 rounded-xl bg-white shadow-sm overflow-auto" data-cal-body>
-  {/* Sticky header row */}
-  <div
-    className="sticky top-0 z-10 grid border-b border-zinc-200 bg-white"
-    style={{
-      gridTemplateColumns:
-        view === "week"
-          ? `120px repeat(7, minmax(180px, 1fr))`
-          : `120px repeat(${Math.max(1, staff.length)}, minmax(220px, 1fr))`,
-    }}
-  >
-    {/* time label cell */}
-    <div className="h-12 flex items-center justify-end pr-3 text-sm font-medium text-zinc-500">Time</div>
 
-    {view === "week"
-      ? DAY_LABEL.map((label, i) => (
-          <div key={i} className="h-12 border-l border-zinc-200 flex flex-col items-center justify-center">
-            <span className="font-semibold text-zinc-700">{label}</span>
-            <span className="text-xs text-zinc-400">{addDays(weekStart, i).getDate()}</span>
+      {/* Calendar shell */}
+      <div
+        className="relative border border-zinc-200 rounded-xl bg-white shadow-sm overflow-auto"
+        data-cal-body
+      >
+        {/* Sticky header row */}
+        <div
+          className="sticky top-0 z-10 grid border-b border-zinc-200 bg-white"
+          style={{
+            gridTemplateColumns:
+              view === "week"
+                ? `120px repeat(7, minmax(180px, 1fr))`
+                : `120px repeat(${Math.max(1, staff.length)}, minmax(220px, 1fr))`,
+          }}
+        >
+          {/* time label cell */}
+          <div className="h-12 flex items-center justify-end pr-3 text-sm font-medium text-zinc-500">
+            Time
           </div>
-        ))
-      : staff.map((s: StaffRow) => (
-          <div key={s.id} className="h-12 border-l border-zinc-200 flex items-center justify-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${colorForName(s.name).split(" ")[0]}`} aria-hidden />
-            <span className="font-semibold text-zinc-700">{s.name}</span>
-          </div>
-        ))}
-  </div>
 
-  {/* Main scrollable grid */}
-  <div
-    className="grid"
-    data-cal-grid
-    style={{
-      gridTemplateColumns:
-        view === "week"
-          ? `120px repeat(7, minmax(180px, 1fr))`
-          : `120px repeat(${Math.max(1, staff.length)}, minmax(220px, 1fr))`,
-    }}
-  >
-    {/* Left time gutter */}
-    <div className="bg-zinc-50 border-r border-zinc-200">
-      {gutterTimes.map((tm: Date, i: number) => (
-        <div key={i} className="h-16 border-b border-zinc-100 text-xs text-zinc-500 flex items-start justify-end pr-3 pt-1">
-          {fmtTime(tm, activeTZ)}
+          {view === "week"
+            ? DAY_LABEL.map((label, i) => (
+                <div
+                  key={i}
+                  className="h-12 border-l border-zinc-200 flex flex-col items-center justify-center"
+                >
+                  <span className="font-semibold text-zinc-700">{label}</span>
+                  <span className="text-xs text-zinc-400">
+                    {addDays(weekStart, i).getDate()}
+                  </span>
+                </div>
+              ))
+            : staff.map((s: StaffRow) => (
+                <div
+                  key={s.id}
+                  className="h-12 border-l border-zinc-200 flex items-center justify-center gap-2"
+                >
+                  <div
+                    className={`w-2 h-2 rounded-full ${
+                      colorForName(s.name).split(" ")[0]
+                    }`}
+                    aria-hidden
+                  />
+                  <span className="font-semibold text-zinc-700">{s.name}</span>
+                </div>
+              ))}
         </div>
-      ))}
-    </div>
+
+        {/* Main scrollable grid */}
+        <div
+          className="grid"
+          data-cal-grid
+          style={{
+            gridTemplateColumns:
+              view === "week"
+                ? `120px repeat(7, minmax(180px, 1fr))`
+                : `120px repeat(${Math.max(1, staff.length)}, minmax(220px, 1fr))`,
+          }}
+        >
+          {/* Left time gutter */}
+          <div className="bg-zinc-50 border-r border-zinc-200">
+            {gutterTimes.map((tm: Date, i: number) => (
+              <div
+                key={i}
+                className="h-16 border-b border-zinc-100 text-xs text-zinc-500 flex items-start justify-end pr-3 pt-1"
+              >
+                {fmtTime(tm, activeTZ)}
+              </div>
+            ))}
+          </div>
 
           {/* Columns */}
           {view === "week"
@@ -606,7 +670,10 @@ const nextDate = addDays(baseDate, view === "day" ?  1 :  7);
                   create={{
                     dateISO: isoDateOnly(addDays(weekStart, dIdx)),
                     slotMin: SLOT_MIN,
-                    staff: staff.map((s: StaffRow) => ({ id: s.id, name: s.name })),
+                    staff: staff.map((s: StaffRow) => ({
+                      id: s.id,
+                      name: s.name,
+                    })),
                     services: services.map((sv: ServiceRow) => ({
                       id: sv.id,
                       name: sv.name,
