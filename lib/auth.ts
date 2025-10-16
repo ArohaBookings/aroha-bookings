@@ -4,9 +4,9 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import EmailProvider from "next-auth/providers/email";
 import type { NextAuthOptions, Session } from "next-auth";
 import { getServerSession } from "next-auth";
+import type { JWT } from "next-auth/jwt";
 import { compare } from "bcryptjs";
 import { prisma } from "@/lib/db";
-import type { JWT } from "next-auth/jwt";
 
 /* ────────────────────────────────────────────────────────────────────────────
    ENV / CONFIG
@@ -18,16 +18,16 @@ const SUPERADMINS: string[] = (process.env.SUPERADMINS || "")
   .filter(Boolean);
 
 const SUPERADMIN_PASSWORD = (process.env.SUPERADMIN_PASSWORD || "").trim();
-const EMAIL_SERVER = (process.env.EMAIL_SERVER || "").trim();
-const EMAIL_FROM = (process.env.EMAIL_FROM || "").trim();
 
-/** Reusable helper */
-export function isSuperAdminEmail(email: string | null | undefined): boolean {
+const EMAIL_SERVER = (process.env.EMAIL_SERVER || "").trim(); // optional
+const EMAIL_FROM = (process.env.EMAIL_FROM || "").trim();     // optional
+
+export function isSuperAdminEmail(email?: string | null): boolean {
   return !!email && SUPERADMINS.includes(email.trim().toLowerCase());
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   LOCAL TYPES (no @prisma/client imports)
+   LOCAL TYPES (no @prisma/client imports required)
 ──────────────────────────────────────────────────────────────────────────── */
 
 type MembershipLite = { orgId: string; role?: string | null };
@@ -42,13 +42,12 @@ type AppToken = JWT & {
   orgCount?: number;
 };
 
-/** Shape we expect from prisma.user.findUnique include */
 type UserWithOptionalPassword = {
   id: string;
   email: string | null;
   name: string | null;
-  password?: string | null; // <- optional in case your client types lag
-  memberships?: MembershipLite[];
+  password?: string | null;         // present if you added `password String?` in schema
+  memberships?: MembershipLite[];   // included via query
 };
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -68,14 +67,16 @@ const providers: any[] = [
 
       if (!email || !password) throw new Error("Missing credentials");
 
-      // 1) Superadmin fast-path
+      // 1) Superadmin fast-path (shared password)
       if (isSuperAdminEmail(email) && SUPERADMIN_PASSWORD && password === SUPERADMIN_PASSWORD) {
+        // ensure user exists for downstream relations
         const existing = await prisma.user.findUnique({ where: { email } });
         const userRow =
           existing ??
           (await prisma.user.create({
             data: { email, name: "Superadmin" },
           }));
+
         return {
           id: userRow.id,
           email: userRow.email!,
@@ -84,16 +85,19 @@ const providers: any[] = [
         };
       }
 
-      // 2) Normal user lookup
+      // 2) Normal user authentication
       const user = (await prisma.user.findUnique({
         where: { email },
         include: { memberships: { select: { orgId: true, role: true } } },
       })) as UserWithOptionalPassword | null;
 
-      if (!user || !user.password) throw new Error("Invalid email or password");
+      if (!user || !user.password) {
+        // either no row or no local password set
+        throw new Error("Invalid email or password");
+      }
 
-      const ok = await compare(password, user.password);
-      if (!ok) throw new Error("Invalid email or password");
+      const valid = await compare(password, user.password);
+      if (!valid) throw new Error("Invalid email or password");
 
       const role = user.memberships?.[0]?.role ?? null;
 
@@ -108,6 +112,7 @@ const providers: any[] = [
   }),
 ];
 
+// Optional magic-link email provider (only if env is present)
 if (EMAIL_SERVER && EMAIL_FROM) {
   providers.push(
     EmailProvider({
@@ -118,16 +123,36 @@ if (EMAIL_SERVER && EMAIL_FROM) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   NEXTAUTH OPTIONS
+   NEXTAUTH OPTIONS (v4)
 ──────────────────────────────────────────────────────────────────────────── */
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
   session: { strategy: "jwt" },
   providers,
-  pages: { signIn: "/login" },
+  pages: {
+    signIn: "/login",
+  },
 
   callbacks: {
+    // Harden redirects to avoid infinite loops or open redirects
+    async redirect({ url, baseUrl }) {
+      try {
+        const target = new URL(url, baseUrl);
+        const base = new URL(baseUrl);
+
+        // Only allow same-origin
+        if (target.origin !== base.origin) return baseUrl;
+
+        // Avoid chaining redirect back to /login repeatedly
+        if (target.pathname.startsWith("/login")) return baseUrl;
+
+        return target.toString();
+      } catch {
+        return baseUrl;
+      }
+    },
+
     async jwt({ token, user }) {
       const t = token as AppToken;
 
@@ -139,7 +164,7 @@ export const authOptions: NextAuthOptions = {
         t.isSuperAdmin = Boolean((user as any).isSuperAdmin);
       }
 
-      // Refresh org membership info into the token
+      // Refresh org memberships (cheap & safe)
       if (t.email) {
         try {
           const memberships = (await prisma.membership.findMany({
@@ -150,7 +175,7 @@ export const authOptions: NextAuthOptions = {
           t.orgIds = memberships.map((m) => m.orgId);
           t.orgCount = t.orgIds.length;
         } catch {
-          // swallow DB errors
+          // swallow db errors so auth never breaks
         }
       }
 
@@ -175,6 +200,7 @@ export const authOptions: NextAuthOptions = {
     },
   },
 
+  // v4: do NOT set `trustHost`. Keep your secret configured in env.
   secret: process.env.NEXTAUTH_SECRET,
 };
 

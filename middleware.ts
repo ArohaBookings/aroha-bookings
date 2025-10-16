@@ -2,16 +2,24 @@
 export { default } from "next-auth/middleware";
 
 /**
- * Protect everything except:
- * - NextAuth endpoints (/api/auth/**)
- * - Public APIs (/api/public/**, /api/retell/**, /api/shopify/**, /api/dev/**)
- * - Public booking pages (/b/[slug])
- * - Marketing/onboarding pages (/login, /register, /complete)
- * - Next static/image assets & common public files
+ * We protect only the authenticated app areas.
+ * Public routes (NOT matched here) remain accessible:
+ *   - /login, /register, /complete
+ *   - /b/[slug] (public booking pages)
+ *   - /api/public/**, /api/retell/**, /api/shopify/**, /api/dev/**
+ *   - Next static/image and common public files
+ *
+ * If you add new private sections, just append another "/segment/:path*".
  */
 export const config = {
   matcher: [
-    // Negative lookahead: exclude listed prefixes/files, protect everything else.
-    '/((?!api/auth|api/public|api/retell|api/shopify|api/dev|_next/static|_next/image|favicon\\.ico|robots\\.txt|sitemap\\.xml|manifest\\.webmanifest|login|register|complete|b/).*)',
+    "/dashboard/:path*",
+    "/calendar/:path*",
+    "/clients/:path*",
+    "/settings/:path*",
+    "/o/:path*",           // org-specific app area
+    "/admin/:path*",       // future admin console
+    "/reports/:path*",     // future analytics
+    "/staff/:path*",       // future staff tools
   ],
 };
