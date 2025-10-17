@@ -14,7 +14,8 @@ export type Block = {
   title: string;
   subtitle: string;
   staffName: string;
-  colorClass: string;
+  colorClass: string;       // Tailwind fallback
+  bgHex?: string;           // ← optional explicit hex background, e.g. "#F8E08E"
   startsAt: Date | string;
   endsAt: Date | string;
   staffId: string | null;
@@ -203,7 +204,12 @@ export function NewBookingButton({
    Grid column & appointment button
    - Matches page.tsx usage: <GridColumn create={{...}} />
    ─────────────────────────────────────────────────────────────── */
-// in app/calendar/ClientIslands.tsx
+
+
+/** One true slot size — MUST match server PX_PER_SLOT (64) */
+const SLOT_PX = 64;
+
+/** Calendar column with fixed pixel height + absolute layer */
 export function GridColumn({
   gutterSlots,
   blocks,
@@ -220,39 +226,74 @@ export function GridColumn({
 }) {
   const colRef = React.useRef<HTMLDivElement | null>(null);
 
-  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const el = colRef.current; if (!el) return;
+  const onDblClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const el = colRef.current;
+    if (!el) return;
     const rect = el.getBoundingClientRect();
     const y = e.clientY - rect.top;
-    const slotHeight = rect.height / gutterSlots;
-    const slotIndex = Math.max(0, Math.round(y / slotHeight));
+    // use the same slot height we render with
+    const slotIndex = Math.max(0, Math.round(y / SLOT_PX));
     const minutesFromOpen = slotIndex * create.slotMin;
     openCreateWithTime({ ...create, minutesFromOpen });
   };
 
+  const totalHeight = gutterSlots * SLOT_PX;
+
   return (
-    <div ref={colRef} className="relative border-l border-zinc-100" onDoubleClick={handleClick}>
-      {Array.from({ length: gutterSlots }).map((_, i) => (
-        <div key={i} className="h-16 border-b border-zinc-100" />
-      ))}
+    <div
+      ref={colRef}
+      className="relative border-l border-zinc-200"
+      style={{ height: totalHeight }}
+      onDoubleClick={onDblClick}
+    >
+      {/* grid lines — non-interactive */}
+      <div className="absolute inset-0 pointer-events-none select-none">
+        {Array.from({ length: gutterSlots }).map((_, i) => (
+          <div
+            key={i}
+            className="border-b border-zinc-100"
+            style={{ position: "absolute", left: 0, right: 0, top: i * SLOT_PX, height: 1 }}
+          />
+        ))}
+      </div>
+
+      {/* blocks layer */}
       <div className="absolute inset-0">
-        {blocks.map((b) => <BlockButton key={b.id} block={b} />)}
+        {blocks.map((b) => (
+          <BlockButton key={b.id} block={b} />
+        ))}
       </div>
     </div>
   );
 }
 
 export function BlockButton({ block }: { block: Block }) {
+  // prefer explicit hex if you add it later; fall back to tailwind colorClass
+  const style: React.CSSProperties = {
+    top: block.top,
+    height: block.height,
+ ...(block.bgHex ? { backgroundColor: block.bgHex, borderColor: block.bgHex } : {}),
+  };
+
   return (
     <button
-      className={`absolute left-1 right-1 rounded-md border px-2 py-1 text-[12px] leading-tight shadow-sm ${block.colorClass} text-left`}
-      style={{ top: block.top, height: block.height }}
+      className={[
+        "absolute left-2 right-2 rounded-md px-2 py-1 text-[12px] leading-tight text-left overflow-hidden",
+        "shadow-sm ring-1 ring-inset",                        // better contrast
+        block.bgHex ? "text-zinc-900 ring-zinc-300" : "",     // when hex is used
+        !block.bgHex ? block.colorClass : "",                 // fallback to class palette
+        "hover:ring-2 focus:outline-none focus:ring-2 focus:ring-indigo-500/50",
+      ].join(" ")}
+      style={style}
       title={`${block.title} — ${block.subtitle}`}
       onClick={() =>
         openEdit({
           id: block.id,
           startsAtISO: toDate(block.startsAt).toISOString(),
-          durationMin: Math.max(10, minutesBetween(toDate(block.startsAt), toDate(block.endsAt))),
+          durationMin: Math.max(
+            10,
+            minutesBetween(toDate(block.startsAt), toDate(block.endsAt))
+          ),
           staffId: block.staffId ?? "",
           serviceId: block.serviceId ?? "",
           customerName: block.title,
@@ -265,7 +306,6 @@ export function BlockButton({ block }: { block: Block }) {
     </button>
   );
 }
-
 /* ───────────────────────────────────────────────────────────────
    Modal plumbing + forms
    ─────────────────────────────────────────────────────────────── */

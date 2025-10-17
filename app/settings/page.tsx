@@ -1,14 +1,11 @@
+// app/settings/page.tsx
 "use client";
 
-
-import React, { useMemo, useState } from "react";
-import { useTransition } from "react";
-import { saveAllSettings, type SaveResponse } from "./actions";
-
-
+import React, { useMemo, useState, useTransition, useRef, useEffect } from "react";
+import { saveAllSettings } from "./actions";
 
 /* ───────────────────────────────────────────────────────────────
-   Types (aligned for future schemas.ts)
+   Types (client-side mirror of your server/schema models)
    ─────────────────────────────────────────────────────────────── */
 
 type OpeningHoursRow = {
@@ -24,7 +21,7 @@ type Staff = {
   email?: string;
   colorHex: string;     // calendar colour
   active: boolean;
-  services: string[];   // service IDs this staff can perform
+  serviceIds: string[]; // <-- IMPORTANT: matches server/actions
 };
 
 type Service = {
@@ -47,7 +44,7 @@ type Roster = {
 
 type BookingRules = {
   slotMin: number;             // grid size (e.g. 5/10/15/30)
-  minLeadMin: number;          // min lead time for online booking in minutes
+  minLeadMin: number;          // min lead time (minutes)
   maxAdvanceDays: number;      // how far ahead can book
   bufferBeforeMin: number;     // per-appointment buffer (before)
   bufferAfterMin: number;      // per-appointment buffer (after)
@@ -86,8 +83,7 @@ type Business = {
   email?: string;
 };
 
-const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const DAY_IDX_FOR_LABEL = [1, 2, 3, 4, 5, 6, 0]; // Mon-first map when needed
+const DAYS_MON_FIRST = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 /* ───────────────────────────────────────────────────────────────
    Small helpers
@@ -98,9 +94,8 @@ function uid(prefix = "id"): string {
 }
 
 function nzd(cents: number) {
-  return new Intl.NumberFormat("en-NZ", { style: "currency", currency: "NZD" }).format(
-    (cents || 0) / 100
-  );
+  return new Intl.NumberFormat("en-NZ", { style: "currency", currency: "NZD" })
+    .format((cents || 0) / 100);
 }
 
 function timeToMin(t: string): number {
@@ -110,15 +105,75 @@ function timeToMin(t: string): number {
 }
 
 function minToTime(min: number): string {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
+  const h = Math.floor((min || 0) / 60);
+  const m = (min || 0) % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
+function deepClone<T>(x: T): T { return JSON.parse(JSON.stringify(x)); }
+
+/** shallow sanity checks (client-side) */
+function validateBeforeSave(opts: {
+  business: Business;
+  openingHours: OpeningHoursRow[];
+  services: Service[];
+  staff: Staff[];
+  roster: Roster;
+  rules: BookingRules;
+}) {
+  const errors: string[] = [];
+
+  if (!opts.business.name.trim()) errors.push("Business name is required.");
+  if (!opts.business.timezone.trim()) errors.push("Timezone is required.");
+
+  if (opts.openingHours.length !== 7) errors.push("Opening hours must have exactly 7 rows.");
+  for (const r of opts.openingHours) {
+    if (!r.closed && r.openMin >= r.closeMin) {
+      errors.push(`Opening hours invalid for weekday ${r.weekday}: open must be before close.`);
+      break;
+    }
+  }
+
+  const svcNames = new Set<string>();
+  for (const s of opts.services) {
+    if (!s.name.trim()) errors.push("Service name cannot be empty.");
+    if (svcNames.has(s.name.trim().toLowerCase())) {
+      errors.push(`Duplicate service name: “${s.name}”.`);
+    }
+    svcNames.add(s.name.trim().toLowerCase());
+    if (s.durationMin <= 0) errors.push(`Service "${s.name}" must have a positive duration.`);
+    if (s.priceCents < 0) errors.push(`Service "${s.name}" has negative price.`);
+  }
+
+  for (const st of opts.staff) {
+    if (!st.name.trim()) errors.push("Staff name cannot be empty.");
+    if (!/^#[0-9a-fA-F]{3,6}$/.test(st.colorHex)) {
+      errors.push(`Staff "${st.name}" has invalid color.`);
+    }
+  }
+
+  if (opts.rules.slotMin < 5 || opts.rules.slotMin > 120) {
+    errors.push("Calendar grid must be between 5 and 120 minutes.");
+  }
+
+  return errors;
+}
+
+/** Confirm discard helper */
+function useConfirmDiscard(dirty: boolean) {
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!dirty) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
+}
+
 /* ───────────────────────────────────────────────────────────────
-   Page — single client component (blank default state)
-   NOTE: you can hydrate later by passing initial props from a
-   server component wrapper and replacing defaults below.
+   Main Page
    ─────────────────────────────────────────────────────────────── */
 
 export default function SettingsPage() {
@@ -131,13 +186,13 @@ export default function SettingsPage() {
     email: "",
   });
 
-  /* Opening hours (blank by default) */
+  /* Opening hours (start closed; user opens the days they want) */
   const [openingHours, setOpeningHours] = useState<OpeningHoursRow[]>(
     Array.from({ length: 7 }, (_, i) => ({
-      weekday: i, // 0..6
+      weekday: i, // 0..6 (Sun..Sat)
       openMin: 9 * 60,
       closeMin: 17 * 60,
-      closed: true, // start closed for a clean slate
+      closed: true,
     }))
   );
 
@@ -145,7 +200,7 @@ export default function SettingsPage() {
   const [services, setServices] = useState<Service[]>([]);
   const [staff, setStaff] = useState<Staff[]>([]);
 
-  /* Roster (per staff) */
+  /* Roster (per staff) — UI uses Mon..Sun order */
   const [roster, setRoster] = useState<Roster>({});
 
   /* Booking Rules */
@@ -188,27 +243,87 @@ export default function SettingsPage() {
     workingEndMin: 17 * 60,
   });
 
-  const activeStaff = useMemo(() => staff.filter((s) => s.active), [staff]);
   const [isSaving, startSaving] = useTransition();
-  /* Aggregate payload (ready for your zod + actions wiring) */
+  const [dirtyCount, setDirtyCount] = useState(0);
+  const [lastError, setLastError] = useState<string | null>(null);
+  const [lastSuccess, setLastSuccess] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  const dirty = dirtyCount > 0;
+  useConfirmDiscard(dirty);
+
+  // bump dirty on any state change (coarse; simple & effective)
+  const markDirty = () => setDirtyCount((n) => n + 1);
+
+  /* Aggregate payload (rotate roster & normalize staff.serviceIds) */
   function buildPayload() {
-  return {
-    business,
-    openingHours,
-    services,     // ← added
-    staff,        // ← added
-    roster,       // ← added
-    bookingRules: rules,
-    notifications,
-    onlineBooking: online,
-    calendarPrefs,
-  };
-}
+    // Normalize roster: UI is Mon..Sun (idx 0..6), server expects Sun..Sat.
+    const rosterSunFirst: Roster = {};
+    for (const [sid, cells] of Object.entries(roster)) {
+      const seven = Array.from({ length: 7 }, (_, i) => cells[i] ?? { start: "", end: "" });
+      // Move Sunday (UI idx 6) to front
+      const sun = seven[6];
+      rosterSunFirst[sid] = [sun, ...seven.slice(0, 6)];
+    }
+
+    return {
+      business,
+      openingHours,
+      services,
+      staff: staff.map((s) => ({
+        ...s,
+        serviceIds: Array.isArray(s.serviceIds) ? s.serviceIds : [],
+      })),
+      roster: rosterSunFirst,
+      bookingRules: rules,
+      notifications,
+      onlineBooking: online,
+      calendarPrefs,
+    };
+  }
+
+  function exportJSON() {
+    const blob = new Blob([JSON.stringify(buildPayload(), null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `settings-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function importJSON(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const obj = JSON.parse(String(reader.result || "{}"));
+        // very light shape guarding
+        if (obj.business) setBusiness(obj.business);
+        if (Array.isArray(obj.openingHours)) setOpeningHours(obj.openingHours);
+        if (Array.isArray(obj.services)) setServices(obj.services);
+        if (Array.isArray(obj.staff)) setStaff(obj.staff);
+        if (obj.roster && typeof obj.roster === "object") setRoster(obj.roster);
+        if (obj.bookingRules) setRules(obj.bookingRules);
+        if (obj.notifications) setNotifications(obj.notifications);
+        if (obj.onlineBooking) setOnline(obj.onlineBooking);
+        if (obj.calendarPrefs) setCalendarPrefs(obj.calendarPrefs);
+        setLastSuccess("Imported JSON settings.");
+        markDirty();
+      } catch (e: any) {
+        setLastError(`Failed to import: ${e?.message || "Invalid JSON"}`);
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  const activeStaff = useMemo(() => staff.filter((s) => s.active), [staff]);
 
   return (
     <div className="p-6 space-y-10 text-black">
       {/* Header */}
-      <header className="flex items-start justify-between">
+      <header className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
           <p className="text-sm text-zinc-800">
@@ -216,43 +331,84 @@ export default function SettingsPage() {
             online bookings and calendar preferences.
           </p>
         </div>
-     
 
-      <div className="hidden sm:flex gap-2">
-      <button
-       className="rounded-md bg-black text-white px-4 py-2 text-sm hover:bg-black transition disabled:opacity-60"
-       disabled={isSaving}
-       onClick={() => {
-        const payload = buildPayload();
-
-      startSaving(async () => {
-        // Cast payload and the returned shape to satisfy TS
-        const res = (await saveAllSettings(payload as any)) as {
-          ok: boolean;
-          error?: string;
-        };
-
-        alert(
-          res.ok
-            ? "Settings saved ✅"
-            : `Failed to save settings${res.error ? ` (${res.error})` : ""}`
-        );
-      });
-      }}
-     >
-      {isSaving ? "Saving…" : "Save changes"}
-       </button>
-       </div>
-
+        <div className="flex gap-2 items-center">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="application/json"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) importJSON(f);
+              if (fileRef.current) fileRef.current.value = "";
+            }}
+          />
+          <button
+            className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50"
+            onClick={exportJSON}
+          >
+            Export JSON
+          </button>
+          <button
+            className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50"
+            onClick={() => fileRef.current?.click()}
+          >
+            Import JSON
+          </button>
+          <button
+            className="rounded-md bg-black text-white px-4 py-2 text-sm hover:bg-black/90 transition disabled:opacity-60"
+            disabled={isSaving}
+            onClick={() => {
+              setLastError(null);
+              setLastSuccess(null);
+              const payload = buildPayload();
+              const errs = validateBeforeSave({
+                business, openingHours, services, staff, roster, rules,
+              });
+              if (errs.length) {
+                setLastError(errs.join("\n"));
+                return;
+              }
+              startSaving(async () => {
+                const res = await saveAllSettings(payload as any);
+                if (res.ok) {
+                  setLastSuccess("Settings saved ✅");
+                  setDirtyCount(0);
+                } else {
+                  setLastError(res.error || "Failed to save settings");
+                }
+              });
+            }}
+          >
+            {isSaving ? "Saving…" : (dirty ? "Save changes *" : "Save changes")}
+          </button>
+        </div>
       </header>
 
+      {/* surface any last result */}
+      {(lastError || lastSuccess) && (
+        <div
+          className={`rounded-md border px-4 py-3 text-sm ${
+            lastError
+              ? "border-red-300 bg-red-50 text-red-800 whitespace-pre-wrap"
+              : "border-emerald-300 bg-emerald-50 text-emerald-800"
+          }`}
+        >
+          {lastError || lastSuccess}
+        </div>
+      )}
+
       {/* Business */}
-      <BusinessCard business={business} onChange={setBusiness} />
+      <BusinessCard
+        business={business}
+        onChange={(b) => { setBusiness(b); markDirty(); }}
+      />
 
       {/* Opening Hours */}
       <OpeningHoursCard
         hours={openingHours}
-        onChange={(next) => setOpeningHours(next)}
+        onChange={(next) => { setOpeningHours(next); markDirty(); }}
       />
 
       {/* Staff */}
@@ -265,17 +421,22 @@ export default function SettingsPage() {
             if (prev[s.id]) return prev;
             return {
               ...prev,
-              [s.id]: Array.from({ length: 7 }, () => ({ start: "", end: "" })),
+              [s.id]: Array.from({ length: 7 }, () => ({ start: "", end: "" })), // Mon..Sun
             };
           });
+          markDirty();
         }}
-        onUpdate={(id, patch) => setStaff((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)))}
+        onUpdate={(id, patch) => {
+          setStaff((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+          markDirty();
+        }}
         onDelete={(id) => {
           setStaff((prev) => prev.filter((s) => s.id !== id));
           setRoster((prev) => {
             const { [id]: _drop, ...rest } = prev;
             return rest;
           });
+          markDirty();
         }}
       />
 
@@ -287,39 +448,44 @@ export default function SettingsPage() {
           setRoster((prev) => {
             const next = { ...prev };
             const row = next[staffId] ?? Array.from({ length: 7 }, () => ({ start: "", end: "" }));
-            const copy = [...row];
+            const copy = deepClone(row);
             copy[dayIdx] = cell;
             next[staffId] = copy;
             return next;
           });
+          markDirty();
         }}
       />
 
       {/* Services */}
       <ServicesCard
         services={services}
-        onAdd={(svc) => setServices((prev) => [...prev, svc])}
-        onUpdate={(id, patch) =>
-          setServices((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)))
-        }
+        onAdd={(svc) => { setServices((prev) => [...prev, svc]); markDirty(); }}
+        onUpdate={(id, patch) => {
+          setServices((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+          markDirty();
+        }}
         onDelete={(id) => {
           setServices((prev) => prev.filter((s) => s.id !== id));
           // also strip from staff
-          setStaff((prev) => prev.map((st) => ({ ...st, services: st.services.filter((sid) => sid !== id) })));
+          setStaff((prev) =>
+            prev.map((st) => ({ ...st, serviceIds: st.serviceIds.filter((sid) => sid !== id) }))
+          );
+          markDirty();
         }}
       />
 
       {/* Booking rules */}
-      <BookingRulesCard rules={rules} onChange={setRules} />
+      <BookingRulesCard rules={rules} onChange={(r) => { setRules(r); markDirty(); }} />
 
       {/* Notifications */}
-      <NotificationsCard notif={notifications} onChange={setNotifications} />
+      <NotificationsCard notif={notifications} onChange={(n) => { setNotifications(n); markDirty(); }} />
 
       {/* Online booking */}
-      <OnlineBookingCard online={online} onChange={setOnline} />
+      <OnlineBookingCard online={online} onChange={(o) => { setOnline(o); markDirty(); }} />
 
       {/* Calendar preferences */}
-      <CalendarPrefsCard prefs={calendarPrefs} onChange={setCalendarPrefs} />
+      <CalendarPrefsCard prefs={calendarPrefs} onChange={(c) => { setCalendarPrefs(c); markDirty(); }} />
 
       {/* Sticky Save (mobile) */}
       <div className="sm:hidden fixed bottom-4 right-4">
@@ -328,7 +494,7 @@ export default function SettingsPage() {
           onClick={() => {
             const payload = buildPayload();
             console.log("Settings payload:", payload);
-            alert("Settings ready to save — check console. Wire to your server actions next.");
+            alert("Settings ready to save — press the main Save button to persist.");
           }}
         >
           Save changes
@@ -566,7 +732,7 @@ function StaffCard({
                   <td className="px-4 py-2">
                     <div className="flex flex-wrap gap-2">
                       {services.map((svc) => {
-                        const checked = s.services.includes(svc.id);
+                        const checked = s.serviceIds.includes(svc.id);
                         return (
                           <label
                             key={svc.id}
@@ -581,10 +747,10 @@ function StaffCard({
                               className="hidden"
                               checked={checked}
                               onChange={(e) => {
-                                const next = new Set(s.services);
+                                const next = new Set(s.serviceIds);
                                 if (e.target.checked) next.add(svc.id);
                                 else next.delete(svc.id);
-                                onUpdate(s.id, { services: Array.from(next) });
+                                onUpdate(s.id, { serviceIds: Array.from(next) });
                               }}
                             />
                             {svc.name}
@@ -651,7 +817,7 @@ function StaffCard({
                   email: email.trim() || undefined,
                   colorHex,
                   active: true,
-                  services: [],
+                  serviceIds: [],
                 });
                 setName("");
                 setEmail("");
@@ -668,7 +834,7 @@ function StaffCard({
 }
 
 /* ───────────────────────────────────────────────────────────────
-   Roster
+   Roster (UI Mon..Sun)
    ─────────────────────────────────────────────────────────────── */
 function RosterCard({
   staff,
@@ -687,7 +853,7 @@ function RosterCard({
           <thead className="bg-zinc-50 text-black">
             <tr>
               <th className="text-left px-4 py-2 font-medium w-48">Staff</th>
-              {DAYS.map((d) => (
+              {DAYS_MON_FIRST.map((d) => (
                 <th key={d} className="text-left px-4 py-2 font-medium">
                   {d}
                 </th>
@@ -696,7 +862,7 @@ function RosterCard({
           </thead>
           <tbody>
             {staff.map((s) => {
-              const row = roster[s.id] ?? Array.from({ length: 7 }, () => ({ start: "", end: "" }));
+              const row = roster[s.id] ?? Array.from({ length: 7 }, () => ({ start: "", end: "" })); // Mon..Sun
               return (
                 <tr key={s.id} className="border-t border-zinc-200">
                   <td className="px-4 py-2">
@@ -819,7 +985,9 @@ function ServicesCard({
                       step="0.01"
                       className="h-9 w-32 rounded-md border border-zinc-300 px-3 outline-none focus:ring-2 focus:ring-black/10"
                       value={s.priceCents / 100}
-                      onChange={(e) => onUpdate(s.id, { priceCents: Math.round(Number(e.target.value || 0) * 100) })}
+                      onChange={(e) =>
+                        onUpdate(s.id, { priceCents: Math.round(Number(e.target.value || 0) * 100) })
+                      }
                     />
                     <div className="text-xs text-zinc-500 mt-1">{nzd(s.priceCents)}</div>
                   </td>
@@ -1201,9 +1369,7 @@ function NumberField({
     </label>
   );
 }
-/* ───────────────────────────────────────────────────────────────
-   TimeMinField (HH:MM ↔ minutes)
-   ─────────────────────────────────────────────────────────────── */
+
 function TimeMinField({
   label,
   minutes,
@@ -1237,9 +1403,6 @@ function TimeMinField({
   );
 }
 
-/* ───────────────────────────────────────────────────────────────
-   TemplateField (multiline with hint)
-   ─────────────────────────────────────────────────────────────── */
 function TemplateField({
   label,
   value,
@@ -1259,8 +1422,7 @@ function TemplateField({
         placeholder="Use {{name}}, {{datetime}}, {{staff}} etc."
       />
       <span className="text-[11px] text-zinc-500">
-        Variables:{" "}
-        <code className="font-mono">{"{{name}}"}</code>,{" "}
+        Variables: <code className="font-mono">{"{{name}}"}</code>,{" "}
         <code className="font-mono">{"{{datetime}}"}</code>,{" "}
         <code className="font-mono">{"{{staff}}"}</code>
       </span>
