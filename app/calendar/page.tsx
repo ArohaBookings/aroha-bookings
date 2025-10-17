@@ -383,19 +383,48 @@ export default async function CalendarPage({
     // leave arrays empty; UI will show empty states
   }
 
-  const DAY_START_H = Math.floor(getHoursFor(baseDate).openMin / 60);
-  const DAY_END_H = Math.ceil(getHoursFor(baseDate).closeMin / 60);
-
-  // Gutter ticks (based on active day’s hours)
-  const gutterTimes: Date[] = [];
-  {
-    let t = setTime(rangeStart, DAY_START_H, 0);
-    const end = setTime(rangeStart, DAY_END_H, 0);
-    while (t < end) {
-      gutterTimes.push(new Date(t));
-      t = new Date(t.getTime() + SLOT_MIN * 60000);
+// Choose a vertical hours window that always yields rows.
+// For DAY: use that day. For WEEK: use the widest window across the week.
+function getHoursWindowForView() {
+  if (view === "day") {
+    const { openMin, closeMin } = getHoursFor(baseDate);
+    return { startMin: openMin, endMin: closeMin };
+  }
+  // WEEK view: scan Mon..Sun and pick the min open and max close from days that are open
+  let startMin = Number.POSITIVE_INFINITY;
+  let endMin = 0;
+  for (let i = 0; i < 7; i++) {
+    const { openMin, closeMin } = getHoursFor(addDays(weekStart, i));
+    if (closeMin > openMin) {
+      startMin = Math.min(startMin, openMin);
+      endMin = Math.max(endMin, closeMin);
     }
   }
+  // If every day was "closed", fall back to sane defaults (9–17)
+  if (!isFinite(startMin) || endMin <= startMin) {
+    return { startMin: 9 * 60, endMin: 17 * 60 };
+  }
+  return { startMin, endMin };
+}
+
+const { startMin, endMin } = getHoursWindowForView();
+const DAY_START_H = Math.floor(startMin / 60);
+const DAY_END_H   = Math.ceil(endMin / 60);
+
+// Gutter ticks (based on chosen window)
+const gutterTimes: Date[] = [];
+{
+  let t = setTime(rangeStart, DAY_START_H, 0);
+  const end = setTime(rangeStart, DAY_END_H, 0);
+  // Guarantee at least one row even if window collapsed
+  if (end <= t) {
+    end.setHours(t.getHours() + 1);
+  }
+  while (t < end) {
+    gutterTimes.push(new Date(t));
+    t = new Date(t.getTime() + SLOT_MIN * 60000);
+  }
+}
 
   const appts = apptsRaw as ApptRow[];
 

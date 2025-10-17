@@ -99,29 +99,42 @@ export async function cancelBooking(formData: FormData) {
   }
 }
 
-// Quick status toggle (used internally or future UI)
+// Quick status toggle (scoped to org)
 export async function updateBookingStatus(
   id: string,
   status: "SCHEDULED" | "COMPLETED" | "CANCELLED" | "NO_SHOW"
 ) {
-  await prisma.appointment.update({ where: { id }, data: { status } });
+  const org = await requireOrg();
+  await prisma.appointment.update({
+    where: { id_orgId: { id, orgId: org.id } }, // requires a compound unique or change to: where: { id, orgId: org.id } if you have a composite unique
+    data: { status },
+  });
 }
 
-// Permanently delete
+// Permanently delete (scoped to org)
 export async function deleteBooking(id: string) {
-  await prisma.appointment.delete({ where: { id } });
+  const org = await requireOrg();
+  await prisma.appointment.delete({
+    where: { id_orgId: { id, orgId: org.id } }, // see note above
+  });
 }
 
-// Duplicate booking +7 days ahead
+// Duplicate booking +7 days (scoped to org)
 export async function duplicateBooking(id: string) {
-  const src = await prisma.appointment.findUnique({ where: { id } });
-  if (!src) return;
+  const org = await requireOrg();
+
+  const src = await prisma.appointment.findFirst({
+    where: { id, orgId: org.id },
+  });
+  if (!src) return { ok: false as const, error: "Booking not found" };
+
   const plus7 = (d: Date) => new Date(d.getTime() + 7 * 24 * 60 * 60 * 1000);
+
   await prisma.appointment.create({
     data: {
       orgId: src.orgId,
-      staffId: src.staffId ?? undefined,
-      serviceId: src.serviceId ?? undefined,
+      staffId: src.staffId ?? null,
+      serviceId: src.serviceId ?? null,
       customerName: src.customerName,
       customerPhone: src.customerPhone,
       startsAt: plus7(src.startsAt),
@@ -130,4 +143,6 @@ export async function duplicateBooking(id: string) {
       status: "SCHEDULED",
     },
   });
+
+  return { ok: true as const };
 }

@@ -2,7 +2,9 @@
 "use client";
 
 import React, { useMemo, useState, useTransition, useRef, useEffect } from "react";
-import { saveAllSettings } from "./actions";
+import { loadAllSettings, saveAllSettings } from "./actions";
+
+
 
 /* ───────────────────────────────────────────────────────────────
    Types (client-side mirror of your server/schema models)
@@ -243,11 +245,102 @@ export default function SettingsPage() {
     workingEndMin: 17 * 60,
   });
 
+// --- hydrate Settings from DB on first render ---
+const [isLoading, setIsLoading] = useState(true);
+
+useEffect(() => {
+  let alive = true;
+
+  (async () => {
+    try {
+      const data = await loadAllSettings();
+      if (!alive) return;
+
+      // Business
+      setBusiness({
+        name: data.business.name ?? "",
+        timezone: data.business.timezone ?? "Pacific/Auckland",
+        address: data.business.address ?? "",
+        phone: data.business.phone ?? "",
+        email: data.business.email ?? "",
+      });
+
+      // Opening hours
+      setOpeningHours(
+        data.openingHours.map((h) => ({
+          weekday: h.weekday,
+          openMin: h.openMin,
+          closeMin: h.closeMin,
+          closed: !!h.closed,
+        }))
+      );
+
+      // Services
+      setServices(
+        data.services.map((s) => ({
+          id: s.id,
+          name: s.name,
+          durationMin: s.durationMin,
+          priceCents: s.priceCents,
+          colorHex: s.colorHex ?? "#DBEAFE",
+        }))
+      );
+
+      // Staff
+      setStaff(
+        data.staff.map((s) => ({
+          id: s.id,
+          name: s.name,
+          email: s.email ?? undefined,
+          active: s.active,
+          colorHex: s.colorHex ?? "#10B981",
+          serviceIds: Array.isArray(s.serviceIds) ? s.serviceIds : [],
+        }))
+      );
+
+      // Roster: server Sun..Sat -> UI Mon..Sun
+      const rosterMonFirst: Roster = {};
+      Object.entries(data.roster || {}).forEach(([staffId, week]) => {
+        const seven = (week as RosterCell[]) ?? [];
+        const sun = seven[0] ?? { start: "", end: "" };
+        rosterMonFirst[staffId] = [...seven.slice(1), sun];
+      });
+      setRoster(rosterMonFirst);
+
+      // JSON config bits
+      setRules((data.bookingRules as any) ?? {
+        slotMin: 30, minLeadMin: 60, maxAdvanceDays: 60,
+        bufferBeforeMin: 0, bufferAfterMin: 0, allowOverlaps: false,
+        cancelWindowHours: 24, noShowFeeCents: 0,
+      });
+      setNotifications((data.notifications as any) ?? {
+        emailEnabled: true, smsEnabled: false,
+        customerNewBookingEmail: "", customerReminderEmail: "", customerCancelEmail: "",
+      });
+      setOnline((data.onlineBooking as any) ?? {
+        enabled: true, requireDeposit: false, depositCents: 0, autoConfirm: true
+      });
+      setCalendarPrefs((data.calendarPrefs as any) ?? {
+        weekStartsOn: 1, defaultView: "week", workingStartMin: 540, workingEndMin: 1020
+      });
+    } catch (e) {
+      console.error("loadAllSettings failed", e);
+      setLastError("Failed to load settings.");
+    } finally {
+      if (alive) setIsLoading(false);
+    }
+  })();
+
+  return () => { alive = false; };
+}, []);
+
+
   const [isSaving, startSaving] = useTransition();
   const [dirtyCount, setDirtyCount] = useState(0);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastSuccess, setLastSuccess] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+
 
   const dirty = dirtyCount > 0;
   useConfirmDiscard(dirty);
