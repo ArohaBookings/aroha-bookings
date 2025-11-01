@@ -265,14 +265,25 @@ useEffect(() => {
         email: data.business.email ?? "",
       });
 
-      // Opening hours
+    
+     // Opening hours (ensure all 7 days exist)
       setOpeningHours(
-        data.openingHours.map((h) => ({
+      Array.from({ length: 7 }, (_, i) => {
+      const h = data.openingHours.find((x) => x.weekday === i);
+      return h
+      ? {
           weekday: h.weekday,
-          openMin: h.openMin,
-          closeMin: h.closeMin,
+          openMin: h.openMin ?? 540,
+          closeMin: h.closeMin ?? 1020,
           closed: !!h.closed,
-        }))
+        }
+      : {
+          weekday: i,
+          openMin: 540,
+          closeMin: 1020,
+          closed: true,
+        };
+       })
       );
 
       // Services
@@ -298,14 +309,24 @@ useEffect(() => {
         }))
       );
 
-      // Roster: server Sun..Sat -> UI Mon..Sun
-      const rosterMonFirst: Roster = {};
-      Object.entries(data.roster || {}).forEach(([staffId, week]) => {
-        const seven = (week as RosterCell[]) ?? [];
-        const sun = seven[0] ?? { start: "", end: "" };
-        rosterMonFirst[staffId] = [...seven.slice(1), sun];
-      });
-      setRoster(rosterMonFirst);
+// Roster: server Sun..Sat -> UI Mon..Sun (keep blanks + allow partial edits)
+const rosterMonFirst: Roster = {};
+Object.entries(data.roster || {}).forEach(([staffId, week]) => {
+  const seven = (week as (RosterCell | undefined)[]) ?? [];
+
+  // Keep whatever the server gives — don't auto-wipe partially typed values
+  const norm = (c?: RosterCell): RosterCell => ({
+    start: typeof c?.start === "string" ? c.start : "",
+    end: typeof c?.end === "string" ? c.end : "",
+  });
+
+  // Move Sunday (index 0) to end so UI shows Mon..Sun
+  const sun = norm(seven[0]);
+  rosterMonFirst[staffId] = [...seven.slice(1).map(norm), sun];
+});
+
+setRoster(rosterMonFirst);
+
 
       // JSON config bits
       setRules((data.bookingRules as any) ?? {
@@ -350,14 +371,15 @@ useEffect(() => {
 
   /* Aggregate payload (rotate roster & normalize staff.serviceIds) */
   function buildPayload() {
-    // Normalize roster: UI is Mon..Sun (idx 0..6), server expects Sun..Sat.
-    const rosterSunFirst: Roster = {};
-    for (const [sid, cells] of Object.entries(roster)) {
-      const seven = Array.from({ length: 7 }, (_, i) => cells[i] ?? { start: "", end: "" });
-      // Move Sunday (UI idx 6) to front
-      const sun = seven[6];
-      rosterSunFirst[sid] = [sun, ...seven.slice(0, 6)];
-    }
+   // Normalize roster for server: UI is Mon..Sun (0..6), server expects Sun..Sat.
+// Convert blank cells ("", "") to `undefined` so the server treats them as "no shift".
+const rosterSunFirst: Record<string, (RosterCell | undefined)[]> = {};
+for (const [sid, cells] of Object.entries(roster)) {
+  const sevenRaw = Array.from({ length: 7 }, (_, i) => cells[i] ?? { start: "", end: "" });
+  const sevenClean = sevenRaw.map((c) => (c.start && c.end ? c : undefined));
+  const sun = sevenClean[6]; // Sunday from UI index 6 -> move to front
+  rosterSunFirst[sid] = [sun, ...sevenClean.slice(0, 6)];
+}
 
     return {
       business,
@@ -367,7 +389,7 @@ useEffect(() => {
         ...s,
         serviceIds: Array.isArray(s.serviceIds) ? s.serviceIds : [],
       })),
-      roster: rosterSunFirst,
+      roster: rosterSunFirst as any, // server expects undefined for no-shift
       bookingRules: rules,
       notifications,
       onlineBooking: online,
@@ -397,7 +419,16 @@ useEffect(() => {
         if (Array.isArray(obj.openingHours)) setOpeningHours(obj.openingHours);
         if (Array.isArray(obj.services)) setServices(obj.services);
         if (Array.isArray(obj.staff)) setStaff(obj.staff);
-        if (obj.roster && typeof obj.roster === "object") setRoster(obj.roster);
+        if (obj.roster && typeof obj.roster === "object") {
+  const r: Roster = {};
+  const norm = (c?: RosterCell): RosterCell =>
+    c && c.start && c.end ? c : { start: "", end: "" };
+  Object.entries(obj.roster).forEach(([sid, week]) => {
+    const seven = (week as (RosterCell | undefined)[]) ?? [];
+    r[sid] = Array.from({ length: 7 }, (_, i) => norm(seven[i]));
+  });
+  setRoster(r);
+}
         if (obj.bookingRules) setRules(obj.bookingRules);
         if (obj.notifications) setNotifications(obj.notifications);
         if (obj.onlineBooking) setOnline(obj.onlineBooking);
@@ -453,26 +484,95 @@ useEffect(() => {
             className="rounded-md bg-black text-white px-4 py-2 text-sm hover:bg-black/90 transition disabled:opacity-60"
             disabled={isSaving}
             onClick={() => {
-              setLastError(null);
-              setLastSuccess(null);
-              const payload = buildPayload();
-              const errs = validateBeforeSave({
-                business, openingHours, services, staff, roster, rules,
-              });
-              if (errs.length) {
-                setLastError(errs.join("\n"));
-                return;
-              }
-              startSaving(async () => {
-                const res = await saveAllSettings(payload as any);
-                if (res.ok) {
-                  setLastSuccess("Settings saved ✅");
-                  setDirtyCount(0);
-                } else {
-                  setLastError(res.error || "Failed to save settings");
-                }
-              });
-            }}
+  setLastError(null);
+  setLastSuccess(null);
+
+  const payload = buildPayload();
+  const errs = validateBeforeSave({ business, openingHours, services, staff, roster, rules });
+  if (errs.length) {
+    setLastError(errs.join("\n"));
+    return;
+  }
+
+  startSaving(async () => {
+    const res = await saveAllSettings(payload as any);
+    if (!res.ok) {
+      setLastError(res.error || "Failed to save settings");
+      return;
+    }
+
+    // 🔁 Reload canonical data so temp IDs are replaced with real DB IDs
+    try {
+      const data = await loadAllSettings();
+
+      // Business
+      setBusiness({
+        name: data.business.name ?? "",
+        timezone: data.business.timezone ?? "Pacific/Auckland",
+        address: data.business.address ?? "",
+        phone: data.business.phone ?? "",
+        email: data.business.email ?? "",
+      });
+
+      // Opening hours (0..6 Sun..Sat)
+      setOpeningHours(
+        Array.from({ length: 7 }, (_, i) => {
+          const h = data.openingHours.find((x) => x.weekday === i);
+          return h
+            ? { weekday: h.weekday, openMin: h.openMin ?? 540, closeMin: h.closeMin ?? 1020, closed: !!h.closed }
+            : { weekday: i, openMin: 540, closeMin: 1020, closed: true };
+        })
+      );
+
+      // Services
+      setServices(
+        data.services.map((s) => ({
+          id: s.id,
+          name: s.name,
+          durationMin: s.durationMin,
+          priceCents: s.priceCents,
+          colorHex: s.colorHex ?? "#DBEAFE",
+        }))
+      );
+
+      // Staff
+      setStaff(
+        data.staff.map((s) => ({
+          id: s.id,
+          name: s.name,
+          email: s.email ?? undefined,
+          active: s.active,
+          colorHex: s.colorHex ?? "#10B981",
+          serviceIds: Array.isArray(s.serviceIds) ? s.serviceIds : [],
+        }))
+      );
+
+// Roster: server Sun..Sat -> UI Mon..Sun (keep partials)
+const rosterMonFirst: Roster = {};
+Object.entries(data.roster || {}).forEach(([staffId, week]) => {
+  const seven = (week as (RosterCell | undefined)[]) ?? [];
+  const norm = (c?: RosterCell): RosterCell => ({
+    start: typeof c?.start === "string" ? c.start : "",
+    end:  typeof c?.end   === "string" ? c.end   : "",
+  });
+  const sun = norm(seven[0]); // server Sunday
+  rosterMonFirst[staffId] = [...seven.slice(1).map(norm), sun];
+});
+setRoster(rosterMonFirst);
+
+      setRules((data.bookingRules as any) ?? rules);
+      setNotifications((data.notifications as any) ?? notifications);
+      setOnline((data.onlineBooking as any) ?? online);
+      setCalendarPrefs((data.calendarPrefs as any) ?? calendarPrefs);
+
+      setLastSuccess("Settings saved ✅");
+      setDirtyCount(0);
+    } catch (e) {
+      console.error("reload after save failed", e);
+      setLastError("Saved, but failed to reload fresh data.");
+    }
+  });
+}}
           >
             {isSaving ? "Saving…" : (dirty ? "Save changes *" : "Save changes")}
           </button>
@@ -533,22 +633,33 @@ useEffect(() => {
         }}
       />
 
-      {/* Weekly Roster */}
-      <RosterCard
-        staff={staff}
-        roster={roster}
-        onChangeCell={(staffId, dayIdx, cell) => {
-          setRoster((prev) => {
-            const next = { ...prev };
-            const row = next[staffId] ?? Array.from({ length: 7 }, () => ({ start: "", end: "" }));
-            const copy = deepClone(row);
-            copy[dayIdx] = cell;
-            next[staffId] = copy;
-            return next;
-          });
-          markDirty();
-        }}
-      />
+    {/* Weekly Roster */}
+<RosterCard
+  staff={staff}
+  roster={roster}
+  onChangeCell={(staffId, dayIdx, cell) => {
+    setRoster((prev) => {
+      const norm = (c?: RosterCell): RosterCell => ({
+        start: typeof c?.start === "string" ? c.start : "",
+        end:   typeof c?.end   === "string" ? c.end   : "",
+      });
+
+      // Build the current row for this staff member (Mon..Sun)
+      const existing = prev[staffId] ?? [];
+      const row: RosterCell[] = Array.from({ length: 7 }, (_, i) =>
+        norm(existing[i])
+      );
+
+      // Update the edited cell
+      const copy = [...row];
+      copy[dayIdx] = norm(cell);
+
+      // Write back
+      return { ...prev, [staffId]: copy };
+    });
+    markDirty();
+  }}
+/>
 
       {/* Services */}
       <ServicesCard
@@ -927,7 +1038,7 @@ function StaffCard({
 }
 
 /* ───────────────────────────────────────────────────────────────
-   Roster (UI Mon..Sun)
+   Roster (UI Mon..Sun) – with per-cell drafts to avoid reset
    ─────────────────────────────────────────────────────────────── */
 function RosterCard({
   staff,
@@ -938,6 +1049,45 @@ function RosterCard({
   roster: Roster;
   onChangeCell: (staffId: string, dayIdx: number, cell: RosterCell) => void;
 }) {
+  // Keep local draft values so typing (partial/AM-PM) doesn't get blown away
+  const [draft, setDraft] = React.useState<Record<string, string>>({});
+
+  // helpers to read/write drafts for a field
+  const keyFor = (staffId: string, dayIdx: number, field: "start" | "end") =>
+    `${staffId}:${dayIdx}:${field}`;
+
+  const getVal = (staffId: string, dayIdx: number, field: "start" | "end", actual: string) => {
+    const k = keyFor(staffId, dayIdx, field);
+    return draft[k] ?? actual; // prefer draft while editing
+  };
+
+  const setVal = (
+    staffId: string,
+    dayIdx: number,
+    field: "start" | "end",
+    value: string,
+  ) => {
+    const k = keyFor(staffId, dayIdx, field);
+    setDraft((d) => ({ ...d, [k]: value }));
+  };
+
+  const commit = (staffId: string, dayIdx: number, field: "start" | "end") => {
+    const row = roster[staffId] ?? Array.from({ length: 7 }, () => ({ start: "", end: "" }));
+    const cell = row[dayIdx] ?? { start: "", end: "" };
+
+    const k = keyFor(staffId, dayIdx, field);
+    const nextValue = draft[k] ?? cell[field];
+
+    // write to parent state
+    onChangeCell(staffId, dayIdx, { ...cell, [field]: nextValue });
+
+    // clear the draft for this field
+    setDraft((d) => {
+      const { [k]: _drop, ...rest } = d;
+      return rest;
+    });
+  };
+
   return (
     <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
       <div className="px-5 py-3 border-b border-zinc-200 font-semibold">Weekly roster</div>
@@ -955,7 +1105,8 @@ function RosterCard({
           </thead>
           <tbody>
             {staff.map((s) => {
-              const row = roster[s.id] ?? Array.from({ length: 7 }, () => ({ start: "", end: "" })); // Mon..Sun
+              const row =
+                roster[s.id] ?? Array.from({ length: 7 }, () => ({ start: "", end: "" })); // Mon..Sun
               return (
                 <tr key={s.id} className="border-t border-zinc-200">
                   <td className="px-4 py-2">
@@ -969,21 +1120,35 @@ function RosterCard({
                       {!s.active && <span className="text-xs text-zinc-700">(inactive)</span>}
                     </div>
                   </td>
+
                   {row.map((cell, i) => (
                     <td key={`${s.id}-${i}`} className="px-4 py-2">
                       <div className="flex items-center gap-2">
+                        {/* START time */}
                         <input
                           type="time"
+                          step={60} // minutes
                           className="h-9 w-28 rounded-md border border-zinc-300 px-2 outline-none focus:ring-2 focus:ring-black/10"
-                          value={cell.start}
-                          onChange={(e) => onChangeCell(s.id, i, { ...cell, start: e.target.value })}
+                          value={getVal(s.id, i, "start", cell.start)}
+                          onChange={(e) => setVal(s.id, i, "start", e.currentTarget.value)}
+                          onBlur={() => commit(s.id, i, "start")}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") commit(s.id, i, "start");
+                          }}
                         />
                         <span className="text-zinc-500">–</span>
+
+                        {/* END time */}
                         <input
                           type="time"
+                          step={60}
                           className="h-9 w-28 rounded-md border border-zinc-300 px-2 outline-none focus:ring-2 focus:ring-black/10"
-                          value={cell.end}
-                          onChange={(e) => onChangeCell(s.id, i, { ...cell, end: e.target.value })}
+                          value={getVal(s.id, i, "end", cell.end)}
+                          onChange={(e) => setVal(s.id, i, "end", e.currentTarget.value)}
+                          onBlur={() => commit(s.id, i, "end")}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") commit(s.id, i, "end");
+                          }}
                         />
                       </div>
                     </td>
@@ -1004,7 +1169,7 @@ function RosterCard({
       <div className="px-5 pb-5">
         <button
           className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50"
-          onClick={() => alert("Soon: auto-fill roster from opening hours.")}
+          onClick={() => alert("Soon: auto-fill from opening hours.")}
         >
           Auto-fill from opening hours (soon)
         </button>

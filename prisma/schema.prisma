@@ -3,34 +3,37 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
 }
 
-/* ────────────────────────────────────────────────
-   AUTH MODELS (NextAuth)
-──────────────────────────────────────────────── */
+/**
+ * ────────────────────────────────────────────────
+ * AUTH MODELS (NextAuth)
+ * ────────────────────────────────────────────────
+ */
 
 model User {
   id            String    @id @default(cuid())
   name          String?
   email         String?   @unique
-  password      String?                // 🔥 needed for CredentialsProvider
+  password      String? // 🔥 needed for CredentialsProvider
   emailVerified DateTime?
   image         String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
   // App relations
-  memberships   Membership[]
+  memberships Membership[]
 
   // NextAuth relations
-  accounts      Account[]
-  sessions      Session[]
+  accounts Account[]
+  sessions Session[]
 }
 
 model Account {
-  id                String   @id @default(cuid())
+  id                String  @id @default(cuid())
   userId            String
   type              String
   provider          String
@@ -68,9 +71,11 @@ model VerificationToken {
   @@unique([identifier, token])
 }
 
-/* ────────────────────────────────────────────────
-   CORE APP MODELS (Aroha Bookings)
-──────────────────────────────────────────────── */
+/**
+ * ────────────────────────────────────────────────
+ * CORE APP MODELS (Aroha Bookings)
+ * ────────────────────────────────────────────────
+ */
 
 enum Plan {
   LITE
@@ -125,10 +130,10 @@ model Membership {
 }
 
 model OrgInvite {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   orgId     String
   email     String
-  token     String   @unique
+  token     String    @unique
   expiresAt DateTime
   usedAt    DateTime?
 
@@ -149,7 +154,7 @@ model StaffMember {
   serviceLinks StaffService[]
   schedules    StaffSchedule[]
   appointments Appointment[]
-  
+
   @@unique([orgId, name])
   @@unique([orgId, email])
   @@index([orgId, active])
@@ -167,7 +172,6 @@ model Service {
   staffLinks   StaffService[]
   appointments Appointment[]
 
-  @@index([orgId, name])
   @@unique([orgId, name])
 }
 
@@ -187,9 +191,9 @@ model StaffService {
 model StaffSchedule {
   id        String @id @default(cuid())
   staffId   String
-  dayOfWeek Int    // 0=Sun..6=Sat
-  startTime String // "09:00"
-  endTime   String // "17:00"
+  dayOfWeek Int // 0=Sun..6=Sat
+  startTime String @db.VarChar(5) // "09:00"
+  endTime   String @db.VarChar(5) // "17:00"
 
   staff StaffMember @relation(fields: [staffId], references: [id], onDelete: Cascade)
 
@@ -208,9 +212,11 @@ model OpeningHours {
   @@unique([orgId, weekday])
 }
 
-/* ────────────────────────────────────────────────
-   CUSTOMERS & APPOINTMENTS
-──────────────────────────────────────────────── */
+/**
+ * ────────────────────────────────────────────────
+ * CUSTOMERS & APPOINTMENTS
+ * ────────────────────────────────────────────────
+ */
 
 enum AppointmentStatus {
   SCHEDULED
@@ -266,11 +272,14 @@ model Appointment {
   @@index([orgId, startsAt])
   @@index([orgId, status])
   @@index([orgId, source])
+  @@index([orgId, endsAt]) // NEW
 }
 
-/* ────────────────────────────────────────────────
-   SETTINGS & CONFIGURATION (per-org JSON)
-──────────────────────────────────────────────── */
+/**
+ * ────────────────────────────────────────────────
+ * SETTINGS & CONFIGURATION (per-org JSON)
+ * ────────────────────────────────────────────────
+ */
 
 model OrgSettings {
   id        String       @id @default(cuid())
@@ -281,9 +290,11 @@ model OrgSettings {
   updatedAt DateTime     @updatedAt
 }
 
-/* ────────────────────────────────────────────────
-   HOLIDAYS & CHECKOUT TOKENS
-──────────────────────────────────────────────── */
+/**
+ * ────────────────────────────────────────────────
+ * HOLIDAYS & CHECKOUT TOKENS
+ * ────────────────────────────────────────────────
+ */
 
 model Holiday {
   id        String       @id @default(cuid())
@@ -317,9 +328,11 @@ model CheckoutToken {
   @@index([email])
 }
 
-/* ────────────────────────────────────────────────
-   AI & API INTEGRATIONS (Retell, Google/Microsoft)
-──────────────────────────────────────────────── */
+/**
+ * ────────────────────────────────────────────────
+ * AI & API INTEGRATIONS (Retell, Google/Microsoft)
+ * ────────────────────────────────────────────────
+ */
 
 model ApiKey {
   id        String   @id @default(cuid())
