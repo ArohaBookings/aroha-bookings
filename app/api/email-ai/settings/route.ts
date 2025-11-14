@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { Prisma } from "@prisma/client";
 
 // ─────────────────────────────────────────────
-// Environment setup
+// Environment / Route config
 // ─────────────────────────────────────────────
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,7 +16,11 @@ export const fetchCache = "force-no-store";
 // ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────
-function json(data: unknown, status = 200, extraHeaders?: Record<string, string>) {
+function json(
+  data: unknown,
+  status = 200,
+  extraHeaders?: Record<string, string>
+) {
   return NextResponse.json(data, {
     status,
     headers: {
@@ -31,6 +35,8 @@ function safeRegex(pattern?: string | null) {
   if (!pattern) return null;
   try {
     const m = /^\/(.+)\/([a-z]*)$/.exec(pattern);
+    // just validate – throws if invalid
+    // eslint-disable-next-line no-new
     new RegExp(m ? m[1] : pattern, m ? m[2] : "i");
     return null;
   } catch (e: any) {
@@ -41,14 +47,16 @@ function safeRegex(pattern?: string | null) {
 /** Auth + org context */
 async function getAuthedContext() {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.email) return { error: "Not authenticated", status: 401 as const };
+  if (!session?.user?.email)
+    return { error: "Not authenticated", status: 401 as const };
 
   const membership = await prisma.membership.findFirst({
     where: { user: { email: session.user.email } },
     select: { orgId: true },
     orderBy: { orgId: "asc" },
   });
-  if (!membership?.orgId) return { error: "No organization", status: 400 as const };
+  if (!membership?.orgId)
+    return { error: "No organization", status: 400 as const };
 
   const googleConnected = Boolean((session as any)?.google?.access_token);
   return { orgId: membership.orgId, googleConnected };
@@ -84,6 +92,25 @@ const HoursJson = z
 
 const RulesJson = z.array(z.unknown()).max(1000).default([]);
 
+/** Shape of the per-org knowledge base JSON */
+const KnowledgeBaseSchema = z
+  .object({
+    overview: z.string().max(8000).optional(),
+    services: z.string().max(8000).optional(),
+    locations: z.string().max(8000).optional(),
+    faqs: z.string().max(12000).optional(),
+    alwaysMention: z.string().max(8000).optional(),
+    neverMention: z.string().max(8000).optional(),
+  })
+  .passthrough();
+
+const ModelEnum = z.enum([
+  "gpt-5-mini",
+  "gpt-5.1",
+  "gpt-4.1-mini",
+  "gpt-4.1",
+]);
+
 const SettingsSchema = z.object({
   enabled: z.coerce.boolean().optional(),
   businessName: z.string().trim().min(1).max(120).optional(),
@@ -96,7 +123,16 @@ const SettingsSchema = z.object({
   blockedSendersRegex: regexField,
   autoReplyRulesJson: RulesJson.optional(),
   minConfidenceToSend: z.coerce.number().min(0).max(1).optional(),
-  humanEscalationTags: z.array(z.string().trim().min(1).max(40)).max(200).optional(),
+  humanEscalationTags: z
+    .array(z.string().trim().min(1).max(40))
+    .max(200)
+    .optional(),
+
+  // NEW FIELDS
+  autoSendAboveConfidence: z.coerce.boolean().optional(),
+  model: ModelEnum.optional(),
+  logRetentionDays: z.coerce.number().int().min(1).max(365).optional(),
+  knowledgeBaseJson: KnowledgeBaseSchema.optional(),
 });
 
 // ─────────────────────────────────────────────
@@ -106,8 +142,15 @@ export async function GET() {
   const ctx = await getAuthedContext();
   if ("error" in ctx) return json({ ok: false, error: ctx.error }, ctx.status);
 
-  const settings = await prisma.emailAISettings.findUnique({ where: { orgId: ctx.orgId } });
-  return json({ ok: true, googleConnected: ctx.googleConnected, settings: settings ?? null });
+  const settings = await prisma.emailAISettings.findUnique({
+    where: { orgId: ctx.orgId },
+  });
+
+  return json({
+    ok: true,
+    googleConnected: ctx.googleConnected,
+    settings: settings ?? null,
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -120,7 +163,8 @@ export async function POST(req: Request) {
   let raw: string;
   try {
     raw = await req.text();
-    if (raw.length > 512 * 1024) return json({ ok: false, error: "Payload too large" }, 413);
+    if (raw.length > 512 * 1024)
+      return json({ ok: false, error: "Payload too large" }, 413);
   } catch {
     return json({ ok: false, error: "Invalid request body" }, 400);
   }
@@ -132,51 +176,74 @@ export async function POST(req: Request) {
     return json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  // Defensive cleanup
+  // Defensive cleanup (but DO NOT strip templates anymore)
   try {
     if (Array.isArray(payload?.autoReplyRulesJson)) {
-      payload.autoReplyRulesJson = payload.autoReplyRulesJson.filter(
-        (x: any) => !x || x.__type !== "template"
-      );
+      // previously we filtered out __type === "template" here (now removed)
+      // leave bundle as-is: templates + rules live together
     }
 
     const fix = (v: any) =>
-      typeof v === "string" && (v.trim() === "" || v === "__INVALID__") ? null : v;
+      typeof v === "string" && (v.trim() === "" || v === "__INVALID__")
+        ? null
+        : v;
     payload.allowedSendersRegex = fix(payload.allowedSendersRegex);
     payload.blockedSendersRegex = fix(payload.blockedSendersRegex);
-  } catch {}
+  } catch {
+    // ignore cleanup errors
+  }
 
   const parsed = SettingsSchema.safeParse(payload);
   if (!parsed.success) {
     const flat = parsed.error.flatten();
     const firstMsg =
       flat.formErrors?.[0] ||
-      Object.values(flat.fieldErrors || {}).flat()[0] ||
+      (Object.values(flat.fieldErrors || {}).flat()[0] as string | undefined) ||
       "Validation failed";
     return json({ ok: false, error: firstMsg, issues: flat }, 400);
   }
   const data = parsed.data;
 
   if (data.enabled === true && !ctx.googleConnected) {
-    return json({ ok: false, error: "Connect Gmail before enabling Email AI" }, 400);
+    return json(
+      { ok: false, error: "Connect Gmail before enabling Email AI" },
+      400
+    );
   }
 
   const allowErr = safeRegex(data.allowedSendersRegex ?? null);
-  if (allowErr) return json({ ok: false, error: `allowedSendersRegex: ${allowErr}` }, 400);
+  if (allowErr)
+    return json(
+      { ok: false, error: `allowedSendersRegex: ${allowErr}` },
+      400
+    );
   const blockErr = safeRegex(data.blockedSendersRegex ?? null);
-  if (blockErr) return json({ ok: false, error: `blockedSendersRegex: ${blockErr}` }, 400);
+  if (blockErr)
+    return json(
+      { ok: false, error: `blockedSendersRegex: ${blockErr}` },
+      400
+    );
 
-  // DB Save
+      // DB Save
   try {
     const hoursJson = (data.businessHoursJson ?? {}) as Prisma.InputJsonValue;
     const autoRulesJson = (data.autoReplyRulesJson ?? []) as Prisma.InputJsonValue;
     const humanTagsJson = (data.humanEscalationTags ?? []) as Prisma.InputJsonValue;
+    const kbJson = (data.knowledgeBaseJson ?? {}) as Prisma.InputJsonValue;
 
-    const { businessHoursJson: _bh, autoReplyRulesJson: _ar, humanEscalationTags: _ht, ...rest } =
-      data;
+    const {
+      businessHoursJson: _bh,
+      autoReplyRulesJson: _ar,
+      humanEscalationTags: _ht,
+      knowledgeBaseJson: _kb,
+      ...rest
+    } = data;
 
-    const createData: Prisma.EmailAISettingsCreateInput = {
+    // use `any` so TS doesn't complain about new fields
+    const createData: any = {
       organization: { connect: { id: ctx.orgId } },
+
+      // sensible defaults; anything in `rest` overrides these
       enabled: false,
       googleAccountEmail: undefined,
       signature: null,
@@ -190,14 +257,19 @@ export async function POST(req: Request) {
       autoReplyRulesJson: autoRulesJson,
       minConfidenceToSend: 0.65,
       humanEscalationTags: humanTagsJson,
+      knowledgeBaseJson: kbJson,
+
+      // this brings in: autoSendAboveConfidence, model, logRetentionDays, etc.
       ...rest,
     };
 
-    const updateData: Prisma.EmailAISettingsUpdateInput = {
+    const updateData: any = {
       ...rest,
       businessHoursJson: hoursJson,
       autoReplyRulesJson: autoRulesJson,
       humanEscalationTags: humanTagsJson,
+      knowledgeBaseJson: kbJson,
+      // let googleAccountEmail be set explicitly via rest if you ever add it
       googleAccountEmail: undefined,
     };
 
@@ -207,9 +279,15 @@ export async function POST(req: Request) {
       update: updateData,
     });
 
-    return json({ ok: true, googleConnected: ctx.googleConnected, settings: s }, 200);
+    return json(
+      { ok: true, googleConnected: ctx.googleConnected, settings: s },
+      200
+    );
   } catch (e: any) {
-    return json({ ok: false, error: e?.message || "Database error" }, 500);
+    return json(
+      { ok: false, error: e?.message || "Database error" },
+      500
+    );
   }
 }
 
