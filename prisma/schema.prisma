@@ -18,7 +18,7 @@ model User {
   id            String    @id @default(cuid())
   name          String?
   email         String?   @unique
-  password      String? // 🔥 needed for CredentialsProvider
+  password      String? // needed for CredentialsProvider
   emailVerified DateTime?
   image         String?
   createdAt     DateTime  @default(now())
@@ -45,6 +45,8 @@ model Account {
   scope             String?
   id_token          String?
   session_state     String?
+  refresh_token_expires_in Int?
+
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -110,6 +112,8 @@ model Organization {
   checkoutTokens      CheckoutToken[]
   apiKeys             ApiKey[]
   calendarConnections CalendarConnection[]
+  emailAISettings     EmailAISettings?
+  emailAILogs         EmailAILog[]
 
   @@index([name])
   @@index([slug])
@@ -272,7 +276,7 @@ model Appointment {
   @@index([orgId, startsAt])
   @@index([orgId, status])
   @@index([orgId, source])
-  @@index([orgId, endsAt]) // NEW
+  @@index([orgId, endsAt])
 }
 
 /**
@@ -362,4 +366,79 @@ model CalendarConnection {
 
   @@unique([orgId, provider, accountEmail])
   @@index([orgId, provider])
+}
+
+/**
+ * ────────────────────────────────────────────────
+ * EMAIL AI (universal per-org)
+ * ────────────────────────────────────────────────
+ */
+
+model EmailAISettings {
+  id                  String        @id @default(cuid())
+  orgId               String        @unique
+  organization        Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  enabled             Boolean       @default(false)
+  googleAccountEmail  String?
+  signature           String?
+
+  businessName        String        @default("Your business")
+  businessHoursTz     String        @default("Pacific/Auckland")
+  businessHoursJson   Json          @default("{}")
+
+  defaultTone         String        @default("friendly, concise, local")
+  instructionPrompt   String        @default("")
+
+  allowedSendersRegex String?
+  blockedSendersRegex String?
+
+  autoReplyRulesJson  Json          @default("[]")
+  minConfidenceToSend Float         @default(0.65)
+  humanEscalationTags Json          @default("[]")
+
+  // 🔥 NEW FIELDS TO MATCH FRONTEND
+  autoSendAboveConfidence Boolean   @default(false)
+  model                   String    @default("gpt-5-mini") // or make this an enum if you want
+  logRetentionDays        Int       @default(30)
+  knowledgeBaseJson       Json      @default("{}")
+
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+}
+
+model EmailAILog {
+  id             String         @id @default(cuid())
+  orgId          String
+  org            Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  // Gmail identifiers
+  gmailThreadId  String?
+  gmailMsgId     String?        // message id; unique per org when present
+
+  // Flow metadata
+  direction      String         // "inbound" | "outbound" | "draft"
+  classification String?        // "inquiry" | "job" | "support" | "other"
+  confidence     Float?
+  action         String?        // "auto_sent" | "queued_for_review" | "skipped_blocked" | "escalated"
+  reason         String?        // why action happened
+
+  // Content preview
+  subject        String?
+  snippet        String?
+
+  // Exact time the email hit Gmail (from Gmail internalDate / Date header)
+  receivedAt     DateTime?      // used for newest-first ordering
+
+  // Bag of useful extras (draftId, suggested, threadPeek, emailEpochMs, etc.)
+  rawMeta        Json?
+
+  // Row creation timestamp (when we logged it)
+  createdAt      DateTime       @default(now())
+
+  @@unique([orgId, gmailMsgId])            // idempotency (NULL gmailMsgId allowed)
+  @@index([orgId, receivedAt])             // fast "latest first" per org
+  @@index([orgId, createdAt])              // fallback ordering
+  @@index([gmailThreadId])
+  @@index([orgId, action, receivedAt])     // review queue filters
 }

@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { requireRetellContext } from "@/lib/retell/auth";
 import { prisma } from "@/lib/db";
+import { pushAppointmentToGoogle, updateAppointmentInGoogle, deleteAppointmentFromGoogle } from "@/lib/google-calendar";
 
 export const runtime = "nodejs";
 

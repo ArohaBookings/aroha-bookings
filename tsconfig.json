@@ -1,27 +1,72 @@
 {
   "compilerOptions": {
     "target": "ES2021",
-    "lib": ["dom", "dom.iterable", "esnext"],
-    "allowJs": false,
-    "skipLibCheck": true,
-    "strict": true,
-    "noImplicitAny": true,
-    "noEmit": true,
-    "esModuleInterop": true,
-    "module": "esnext",
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ESNext"
+    ],
+    "module": "ESNext",
     "moduleResolution": "bundler",
-    "resolveJsonModule": true,
-    "isolatedModules": true,
     "jsx": "preserve",
+    "noEmit": true,
     "incremental": true,
-
-    "baseUrl": ".",
-    "paths": { "@/*": ["./*"] },
-
-    "types": ["node", "next", "react", "react-dom"],
+    /* Strict enough for reliability without choking on generated code */
+    "strict": true,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "plugins": [{ "name": "next" }]
+    "isolatedModules": true,
+    /* For interop + JSON imports */
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "allowJs": true,
+    /* Path aliases */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    },
+    /* Global types + Next plugin */
+    "types": [
+      "node",
+      "next",
+      "react",
+      "react-dom"
+    ],
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ]
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  "include": [
+    "app/**/*",
+    "components/**/*",
+    "lib/**/*",
+    "next-env.d.ts",
+    "pages/**/*",
+    "prisma/**/*",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next",
+    "out",
+    ".vercel",
+    "dist",
+    "coverage",
+    "**/*.spec.ts",
+    "**/*.test.ts"
+  ],
+  "watchOptions": {
+    "excludeDirectories": [
+      ".next",
+      "node_modules",
+      "dist",
+      "out",
+      ".vercel"
+    ]
+  }
 }

@@ -366,6 +366,24 @@ export default async function CalendarPage({
   const isSuperAdmin = !!gate.isSuperAdmin;
   const org = (gate.org as OrgRow | null) ?? null;
 
+  // --- Google Calendar connection status (OrgSettings -> data.googleCalendarId) ---
+let googleCalendarId: string | null = null;
+let googleAccountEmail: string | null = null;
+if (org) {
+  try {
+    const os = await prisma.orgSettings.findUnique({
+      where: { orgId: org.id },
+      select: { data: true },
+    });
+    const data = (os?.data as any) ?? {};
+    googleCalendarId = (data.googleCalendarId as string) ?? null;
+    googleAccountEmail = (data.googleAccountEmail as string) ?? null; // optional if you store it
+  } catch {
+    // swallow; render as "not connected"
+  }
+}
+const isGoogleConnected = Boolean(googleCalendarId);
+
   // Paywall: either org exists OR they still have a valid purchase token
   const hasPurchase = Boolean(org || gate.purchaseToken);
 
