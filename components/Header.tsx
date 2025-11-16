@@ -31,8 +31,6 @@ export default async function Header() {
   let name = "";
   let orgName: string | null = null;
   let plan: Plan | null = null;
-  let googleCalendarId: string | null = null;
-  let googleAccountEmail: string | null = null;
   let emailAIEnabled = false;
 
   try {
@@ -57,35 +55,15 @@ export default async function Header() {
 
       const org = user?.memberships?.[0]?.org ?? null;
 
-            if (org) {
+      if (org) {
         orgName = org.name;
         plan = (org.plan as Plan) ?? null;
 
-        // 1) Org settings (for selected calendar id, etc.)
-        const os = await prisma.orgSettings.findUnique({
-          where: { orgId: org.id },
-          select: { data: true },
-        });
-        const data = (os?.data as any) ?? {};
-        googleCalendarId = (data.googleCalendarId as string) ?? null;
-
-        // 2) Actual Google Calendar connection row
-        const calendarConn = await prisma.calendarConnection.findFirst({
-          where: { orgId: org.id, provider: "google" },
-          select: { accountEmail: true },
-        });
-
-        // 3) Gmail connection for Email AI (optional)
+        // Email AI enabled?
         const emailSettings = await prisma.emailAISettings.findUnique({
           where: { orgId: org.id },
-          select: { enabled: true, googleAccountEmail: true },
+          select: { enabled: true },
         });
-
-        googleAccountEmail =
-          (calendarConn?.accountEmail as string | null) ??
-          (emailSettings?.googleAccountEmail as string | null) ??
-          null;
-
         emailAIEnabled = !!emailSettings?.enabled;
       }
     }
@@ -96,9 +74,6 @@ export default async function Header() {
   const display = (name || email || "there").trim();
   const initials = safeInitials(name || email);
   const isAuthed = Boolean(email);
-
-  // Treat either a selected calendar OR stored Google account email as "connected"
-  const isGoogleConnected = Boolean(googleCalendarId || googleAccountEmail);
 
   const planLabel =
     plan === "PREMIUM"
@@ -179,31 +154,6 @@ export default async function Header() {
         ) : (
           // Logged-in
           <div className="flex items-center gap-3 min-w-0">
-            {/* Google status chip */}
-            <div className="hidden md:flex items-center gap-2">
-              {isGoogleConnected ? (
-                <Link
-                  href="/api/calendar/google/select"
-                  className="inline-flex items-center gap-2 rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-[11px] text-emerald-900"
-                  title={`Synced to Google${
-                    googleAccountEmail ? ` (${googleAccountEmail})` : ""
-                  }. Click to change calendar.`}
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden />
-                  Google sync on
-                </Link>
-              ) : (
-                <Link
-                  href="/api/calendar/google/select"
-                  className="inline-flex items-center gap-2 rounded-full border border-zinc-300 bg-white px-2.5 py-0.5 text-[11px] text-zinc-700 hover:bg-zinc-50"
-                  title="Connect Google Calendar to sync bookings automatically"
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-zinc-400" aria-hidden />
-                  Connect Google
-                </Link>
-              )}
-            </div>
-
             {/* User pill */}
             <div
               className="hidden sm:flex max-w-[18rem] items-center gap-2 text-sm text-zinc-600"
@@ -295,24 +245,6 @@ export default async function Header() {
             >
               Email&nbsp;AI
             </Link>
-
-            {isGoogleConnected ? (
-              <Link
-                href="/api/calendar/google/select"
-                className="ml-auto px-2 py-1 rounded border border-emerald-300 bg-emerald-50 text-emerald-900 whitespace-nowrap"
-                title="Change Google Calendar"
-              >
-                Google on
-              </Link>
-            ) : (
-              <Link
-                href="/api/calendar/google/select"
-                className="ml-auto px-2 py-1 rounded border border-zinc-300 whitespace-nowrap"
-                title="Connect Google Calendar"
-              >
-                Connect Google
-              </Link>
-            )}
           </nav>
         </div>
       )}
