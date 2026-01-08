@@ -41,15 +41,16 @@
       }
     ]
   },
-  "include": [
-    "app/**/*",
-    "components/**/*",
-    "lib/**/*",
-    "next-env.d.ts",
-    "pages/**/*",
-    "prisma/**/*",
-    ".next/types/**/*.ts"
-  ],
+"include": [
+  "app/**/*",
+  "components/**/*",
+  "lib/**/*",
+  "next-env.d.ts",
+  "pages/**/*",
+  "prisma/**/*",
+  ".next/types/**/*.ts",
+  "types/**/*.d.ts"        // 👈 ADD THIS LINE
+],
   "exclude": [
     "node_modules",
     ".next",

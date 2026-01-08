@@ -2,51 +2,67 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+// Public pages/assets that never require auth
 const PUBLIC_PATHS = [
-  "/",                // marketing homepage
+  "/",            // marketing homepage
   "/login",
   "/register",
-  "/api/auth",        // next-auth routes
-  "/_next",           // assets
+  "/api/auth",    // NextAuth routes
   "/favicon.ico",
   "/robots.txt",
   "/sitemap.xml",
-  "/static",          // if you have one
+  "/static",
+  "/_next",
 ];
 
 function isPublicPath(pathname: string) {
-  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/"));
+  return PUBLIC_PATHS.some(
+    (p) => pathname === p || pathname.startsWith(p + "/"),
+  );
 }
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  // Allow all public assets and auth endpoints through
-  if (isPublicPath(pathname)) return NextResponse.next();
 
-  // If you don’t want global protection, you can remove the rest of this file.
-  // If you DO want protection on app pages, only gate specific areas:
-  const needsAuth = pathname.startsWith("/dashboard")
-                 || pathname.startsWith("/calendar")
-                 || pathname.startsWith("/clients")
-                 || pathname.startsWith("/settings");
+  // 1) Allow public paths and assets straight through
+  if (isPublicPath(pathname)) {
+    return NextResponse.next();
+  }
 
-  if (!needsAuth) return NextResponse.next();
+  // 2) Only gate the app areas
+  const needsAuth =
+    pathname.startsWith("/dashboard") ||
+    pathname.startsWith("/calendar") ||
+    pathname.startsWith("/clients") ||
+    pathname.startsWith("/settings");
 
-  // Read the session cookie (NextAuth default session token name for JWT strategy)
-  const hasSession = Boolean(req.cookies.get("next-auth.session-token") ?? req.cookies.get("__Secure-next-auth.session-token"));
+  if (!needsAuth) {
+    return NextResponse.next();
+  }
+
+  // 3) Check for NextAuth session cookie (JWT strategy)
+  const hasSession =
+    !!req.cookies.get("next-auth.session-token") ||
+    !!req.cookies.get("__Secure-next-auth.session-token");
+
   if (!hasSession) {
     const url = req.nextUrl.clone();
     url.pathname = "/login";
-    url.searchParams.set("callbackUrl", req.nextUrl.pathname + req.nextUrl.search);
+    url.searchParams.set(
+      "callbackUrl",
+      req.nextUrl.pathname + req.nextUrl.search,
+    );
     return NextResponse.redirect(url);
   }
 
+  // 4) Logged in → let the server components / helpers
+  //     (requireOrgOrPurchase, /unauthorized etc.) handle purchase checks
   return NextResponse.next();
 }
 
+// Apply middleware everywhere except static assets
 export const config = {
   matcher: [
-    // Run on everything except _next/static etc; we still early-return on PUBLIC_PATHS above
     "/((?!_next/static|_next/image|images|favicon.ico).*)",
   ],
 };

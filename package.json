@@ -36,7 +36,7 @@
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.0",
     "@prisma/client": "^6.18.0",
-    "bcryptjs": "^3.0.2",
+    "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
     "date-fns": "^3.6.0",
     "googleapis": "^164.1.0",
@@ -47,6 +47,7 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-hook-form": "^7.53.0",
+    "resend": "^6.5.2",
     "twilio": "^5.10.2",
     "zod": "^3.23.8"
   },

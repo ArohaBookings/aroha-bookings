@@ -4,6 +4,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import React from "react";
+import { useSession } from "next-auth/react";
 
 /* ────────────────────────────────────────────────
    Tiny inline icons (no external deps)
@@ -298,6 +299,28 @@ export default function Sidebar(): React.ReactElement {
           </Link>
         </div>
       </nav>
+
+      {/* SUPER ADMIN ONLY */}
+      {(() => {
+  const { data } = useSession();
+  const email = data?.user?.email?.toLowerCase();
+
+  const isSuperAdmin = email === "leoanthonybons@gmail.com";
+
+  if (!isSuperAdmin) return null;
+
+  return (
+    <Link
+      href="/admin"
+      className="flex items-center gap-3 rounded px-2 py-2 mt-4 text-sm font-semibold text-red-300 hover:text-white hover:bg-red-900/30 focus:outline-none focus:ring-2 focus:ring-red-400"
+    >
+      <svg viewBox="0 0 24 24" className="h-4 w-4 fill-current">
+        <path d="M12 2 2 7v6c0 5 3.8 9.7 10 13 6.2-3.3 10-8 10-13V7l-10-5Z" />
+      </svg>
+      Super Admin
+    </Link>
+     );
+   })()}
 
       {/* Footer actions */}
       <div className="px-2 py-3 mt-auto border-t border-white/10">
