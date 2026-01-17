@@ -1,4 +1,5 @@
 // app/page.tsx
+import { Badge, Card } from "@/components/ui";
 export default function HomePage() {
   return (
     <main className="bg-white text-black min-h-screen">
@@ -74,7 +75,7 @@ export default function HomePage() {
 
           {/* "Interactive" preview card (no JS, but visually shows flow) */}
           <div className="relative">
-            <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm p-4 sm:p-5">
+            <Card className="p-4 sm:p-5">
               <p className="text-xs font-medium text-zinc-500 mb-2">
                 Live flow example (how it actually works)
               </p>
@@ -110,6 +111,144 @@ export default function HomePage() {
                   Keep Aroha Bookings as your source of truth and mirror to your existing calendars.
                 </p>
               </div>
+            </Card>
+          </div>
+        </div>
+      </section>
+
+      {/* INTERACTIVE DEMOS */}
+      <section className="bg-zinc-50 border-y border-zinc-200">
+        <div className="max-w-6xl mx-auto px-6 py-16">
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Interactive demos</p>
+              <h2 className="mt-2 text-3xl font-semibold">See the product before you sign in</h2>
+              <p className="mt-2 text-sm text-zinc-600">
+                Quick, visual explanations of how Aroha handles booking, availability, and calls.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-zinc-500">
+              <Badge variant="success">Google Calendar synced</Badge>
+              <Badge variant="neutral">No double bookings</Badge>
+              <Badge variant="neutral">Clients self-manage</Badge>
+            </div>
+          </div>
+
+          <div className="mt-10 grid lg:grid-cols-3 gap-6">
+            <DemoCard
+              title="See how booking works"
+              subtitle="Client picks a time → AI books → calendar updates."
+              badge="Booking flow"
+              content={
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs">
+                    <span>Service: Cut + Finish</span>
+                    <span className="font-semibold">30 min</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {["10:00", "10:30", "11:00"].map((t, i) => (
+                      <div
+                        key={t}
+                        className={`rounded-lg border px-3 py-2 text-center text-xs ${
+                          i === 1 ? "border-black bg-black text-white" : "border-zinc-200 text-zinc-600"
+                        }`}
+                      >
+                        {t}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                    Booking confirmed → calendar updated
+                  </div>
+                </div>
+              }
+            />
+
+            <DemoCard
+              title="See why a slot is unavailable"
+              subtitle="Clear reasons with human-readable explanations."
+              badge="Availability logic"
+              content={
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs">
+                    Tue 1:30pm · Electrician
+                  </div>
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    Busy on-site nearby → travel buffer applies
+                  </div>
+                  <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-600">
+                    Suggested: Tue 3:00pm (recommended)
+                  </div>
+                </div>
+              }
+            />
+
+            <DemoCard
+              title="See how calls turn into bookings"
+              subtitle="Calls → AI summary → booking timeline."
+              badge="Calls → Calendar"
+              content={
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs">
+                    Call with Jess · 2m 12s
+                  </div>
+                  <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs">
+                    AI note: “Requested Friday 10am, prefers Maya.”
+                  </div>
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                    Appointment created → synced to Google
+                  </div>
+                </div>
+              }
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* ANIMATED BOOKING PREVIEW */}
+      <section className="max-w-6xl mx-auto px-6 py-16">
+        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Animated booking preview</p>
+              <h2 className="mt-2 text-2xl font-semibold text-zinc-900">A booking, in motion</h2>
+              <p className="mt-2 text-sm text-zinc-600">
+                A lightweight preview of how Aroha confirms bookings and updates your calendar.
+              </p>
+            </div>
+            <span className="text-xs text-zinc-500">Demo data · No sign-in required</span>
+          </div>
+
+          <div className="mt-6 grid md:grid-cols-[1.2fr_0.8fr] gap-6 items-center">
+            <div className="relative overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50 p-4">
+              <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-emerald-400 via-emerald-200 to-emerald-400 animate-pulse" />
+              <div className="space-y-3">
+                <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs">
+                  Client: Priya · Service: Colour refresh
+                </div>
+                <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs">
+                  AI checks availability → 4 slots found
+                </div>
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                  Fri 11:30am selected · Staff: Maya
+                </div>
+                <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs">
+                  Google Calendar updated in 2s
+                </div>
+              </div>
+            </div>
+            <div className="grid gap-3">
+              {[
+                "Hair & Beauty: highlight regulars, tone‑matched confirmations",
+                "Trades: travel buffers + onsite scheduling explained",
+                "Medical: calm confirmation language + policy reminders",
+                "Legal: formal booking summaries with documentation prompts",
+                "Auto: drop‑off windows and pickup reminders",
+              ].map((line) => (
+                <div key={line} className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-600">
+                  {line}
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -451,6 +590,31 @@ function Quote({ text, author }: { text: string; author: string }) {
       <p className="text-zinc-800">“{text}”</p>
       <footer className="mt-3 text-sm text-zinc-500">— {author}</footer>
     </blockquote>
+  );
+}
+
+function DemoCard({
+  title,
+  subtitle,
+  badge,
+  content,
+}: {
+  title: string;
+  subtitle: string;
+  badge: string;
+  content: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md">
+      <div className="flex items-center justify-between">
+        <span className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-zinc-500">
+          {badge}
+        </span>
+      </div>
+      <h3 className="mt-3 text-lg font-semibold text-zinc-900">{title}</h3>
+      <p className="mt-1 text-sm text-zinc-600">{subtitle}</p>
+      <div className="mt-4">{content}</div>
+    </div>
   );
 }
 

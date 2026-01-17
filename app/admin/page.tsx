@@ -2,7 +2,12 @@
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
+import VoiceProvidersPanel from "./VoiceProvidersPanel";
+import OrgBookingPanel from "./OrgBookingPanel";
+import OrgMasterPanel from "./OrgMasterPanel";
 import { Plan } from "@prisma/client";
+import ConfirmActionButton from "@/components/ConfirmActionButton";
+import { Button, Card } from "@/components/ui";
 
 export const runtime = "nodejs";
 
@@ -209,6 +214,48 @@ export default async function AdminPage() {
     prisma.emailAILog.count(),
   ]);
 
+  const orgSettings = await prisma.orgSettings.findMany({
+    select: {
+      orgId: true,
+      data: true,
+      org: { select: { name: true, slug: true } },
+    },
+  });
+
+  const healthEntries = orgSettings.map((s) => {
+    const data = (s.data as Record<string, unknown>) || {};
+    const errors = Array.isArray(data.calendarSyncErrors) ? data.calendarSyncErrors : [];
+    const cronLastRun = typeof data.cronLastRun === "string" ? data.cronLastRun : null;
+    return {
+      orgId: s.orgId,
+      name: s.org?.name || "Unknown",
+      slug: s.org?.slug || "",
+      errorCount: errors.length,
+      lastError: errors[0] as Record<string, unknown> | undefined,
+      cronLastRun,
+    };
+  });
+
+  const totalSyncErrors = healthEntries.reduce((sum, entry) => sum + entry.errorCount, 0);
+  const failingOrgs = healthEntries
+    .filter((entry) => entry.errorCount > 0)
+    .sort((a, b) => b.errorCount - a.errorCount)
+    .slice(0, 6);
+
+  const now = Date.now();
+  const staleCronCount = healthEntries.filter((entry) => {
+    if (!entry.cronLastRun) return true;
+    const ts = new Date(entry.cronLastRun).getTime();
+    if (!Number.isFinite(ts)) return true;
+    return now - ts > 24 * 60 * 60 * 1000;
+  }).length;
+
+  const latestCron = healthEntries.reduce<string | null>((latest, entry) => {
+    if (!entry.cronLastRun) return latest;
+    if (!latest) return entry.cronLastRun;
+    return new Date(entry.cronLastRun) > new Date(latest) ? entry.cronLastRun : latest;
+  }, null);
+
   // Recent orgs (with very basic info)
   const orgs = await prisma.organization.findMany({
     orderBy: { createdAt: "desc" },
@@ -258,6 +305,60 @@ export default async function AdminPage() {
         <StatCard label="Email AI Logs" value={emailLogCount} />
       </section>
 
+      {/* GLOBAL HEALTH */}
+      <section className="mb-10 rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
+        <h2 className="text-lg font-semibold">Global health overview</h2>
+        <p className="mt-1 text-sm text-zinc-500">
+          Sync reliability, failing orgs, and cron freshness.
+        </p>
+
+        <div className="mt-4 grid gap-4 md:grid-cols-3">
+          <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm">
+            <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Sync errors</div>
+            <div className="mt-2 text-2xl font-semibold text-zinc-800">{totalSyncErrors}</div>
+            <div className="text-xs text-zinc-500">{failingOrgs.length} orgs affected</div>
+          </div>
+          <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm">
+            <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Cron freshness</div>
+            <div className="mt-2 text-2xl font-semibold text-zinc-800">{staleCronCount}</div>
+            <div className="text-xs text-zinc-500">orgs stale over 24h</div>
+          </div>
+          <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm">
+            <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Latest cron</div>
+            <div className="mt-2 text-sm text-zinc-700">
+              {latestCron ? new Date(latestCron).toLocaleString() : "No cron runs yet"}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6">
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Failing orgs</div>
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            {failingOrgs.map((org) => (
+              <div key={org.orgId} className="rounded-lg border border-zinc-200 bg-white p-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <div className="font-medium text-zinc-800">{org.name}</div>
+                  <div className="text-xs text-zinc-500">{org.errorCount} errors</div>
+                </div>
+                <div className="mt-1 text-xs text-zinc-500">{org.slug || org.orgId}</div>
+                <div className="mt-2 text-xs text-zinc-600">
+                  Last cron: {org.cronLastRun ? new Date(org.cronLastRun).toLocaleString() : "—"}
+                </div>
+              </div>
+            ))}
+            {failingOrgs.length === 0 && (
+              <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-500">
+                No failing orgs detected.
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <OrgMasterPanel orgs={orgs.map((o) => ({ id: o.id, name: o.name }))} />
+      <VoiceProvidersPanel orgs={orgs.map((o) => ({ id: o.id, name: o.name }))} />
+      <OrgBookingPanel orgs={orgs.map((o) => ({ id: o.id, name: o.name }))} />
+
       {/* CREATE ORG */}
       <section className="mb-10 rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold">Create organisation manually</h2>
@@ -293,12 +394,9 @@ export default async function AdminPage() {
               defaultValue="Pacific/Auckland"
             />
           </div>
-          <button
-            type="submit"
-            className="mt-2 inline-flex items-center justify-center rounded-lg bg-black px-4 py-2.5 text-sm font-medium text-white"
-          >
+          <Button type="submit" className="mt-2">
             Create org
-          </button>
+          </Button>
         </form>
       </section>
 
@@ -340,12 +438,9 @@ export default async function AdminPage() {
               Must match your Membership role values (owner / admin / staff).
             </p>
           </div>
-          <button
-            type="submit"
-            className="mt-2 inline-flex items-center justify-center rounded-lg bg-black px-4 py-2.5 text-sm font-medium text-white"
-          >
+          <Button type="submit" className="mt-2">
             Add user to org
-          </button>
+          </Button>
         </form>
       </section>
 
@@ -382,21 +477,19 @@ export default async function AdminPage() {
                     <div className="flex justify-end gap-2">
                       <form action={resetOrgData}>
                         <input type="hidden" name="orgId" value={o.id} />
-                        <button
-                          type="submit"
+                        <ConfirmActionButton
+                          label="Reset data"
+                          confirmText="Reset all org data? This cannot be undone."
                           className="rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50"
-                        >
-                          Reset data
-                        </button>
+                        />
                       </form>
                       <form action={deleteOrg}>
                         <input type="hidden" name="orgId" value={o.id} />
-                        <button
-                          type="submit"
+                        <ConfirmActionButton
+                          label="Delete"
+                          confirmText="Delete this organisation permanently? This cannot be undone."
                           className="rounded border border-red-300 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50"
-                        >
-                          Delete
-                        </button>
+                        />
                       </form>
                     </div>
                   </td>
@@ -472,11 +565,11 @@ export default async function AdminPage() {
 */
 function StatCard(props: { label: string; value: number }) {
   return (
-    <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+    <Card className="p-4">
       <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
         {props.label}
       </div>
       <div className="mt-2 text-2xl font-semibold">{props.value}</div>
-    </div>
+    </Card>
   );
 }

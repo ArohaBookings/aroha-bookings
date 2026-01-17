@@ -3,6 +3,12 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import Link from "next/link";
 import ReviewClient from "./ReviewClient";
+import Badge from "@/components/ui/Badge";
+import Button from "@/components/ui/Button";
+import Card from "@/components/ui/Card";
+import EmptyState from "@/components/ui/EmptyState";
+import Input from "@/components/ui/Input";
+import Select from "@/components/ui/Select";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,14 +67,27 @@ export default async function ReviewQueuePage({
     return <div className="p-6">No organisation linked to this user.</div>;
   }
 
+  const settings = orgId
+    ? await prisma.emailAISettings.findUnique({
+        where: { orgId },
+        select: { minConfidenceToSend: true },
+      })
+    : null;
+  const confidenceThreshold = settings?.minConfidenceToSend ?? 0.65;
+
   // --- read filters from query
   const params = await searchParams;
   const beforeISO = strFromParam(params?.before);
   const q = (strFromParam(params?.q) || "").trim();
   const classFilter = strFromParam(params?.class) as
-    | "inquiry"
-    | "job"
-    | "support"
+    | "booking_request"
+    | "reschedule"
+    | "cancellation"
+    | "pricing"
+    | "complaint"
+    | "faq"
+    | "admin"
+    | "spam"
     | "other"
     | undefined;
   const minConfPct = numFromParam(params?.minConf); // e.g. 60 => 0.6
@@ -212,12 +231,24 @@ function timeSince(date: Date) {
           <p className="text-sm text-zinc-600">
             Drafts the AI prepared for your approval. Filters persist in the URL.
           </p>
+          <div className="mt-2 text-xs text-zinc-500">
+            Confidence threshold: {(confidenceThreshold * 100).toFixed(0)}%
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs">
+            <Badge variant="warning">Inbox (review queue)</Badge>
+            <Link href="/email-ai/logs">
+              <Badge>Drafts</Badge>
+            </Link>
+            <Link href="/email-ai/logs">
+              <Badge>Auto-sent</Badge>
+            </Link>
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
           <Link
             href="/email-ai/logs"
-            className="px-3 py-1.5 rounded bg-zinc-900 text-white"
+            className="rounded-md bg-black px-3 py-1.5 text-white"
           >
             View Logs
           </Link>
@@ -230,37 +261,37 @@ function timeSince(date: Date) {
         method="get"
         className="flex items-center gap-2 text-sm"
       >
-        <input
+        <Input
           name="q"
           defaultValue={q}
           placeholder="Search subject/snippet…"
-          className="border rounded px-3 py-1.5 w-72"
+          className="w-72"
         />
-        <select
-          name="class"
-          defaultValue={classFilter ?? ""}
-          className="border rounded px-2 py-1.5"
-        >
-          <option value="">All classes</option>
-          <option value="inquiry">Inquiry</option>
-          <option value="job">Job</option>
-          <option value="support">Support</option>
+        <Select name="class" defaultValue={classFilter ?? ""}>
+          <option value="">All categories</option>
+          <option value="booking_request">Booking request</option>
+          <option value="reschedule">Reschedule</option>
+          <option value="cancellation">Cancellation</option>
+          <option value="pricing">Pricing</option>
+          <option value="complaint">Complaint</option>
+          <option value="faq">FAQ</option>
+          <option value="admin">Admin</option>
+          <option value="spam">Spam</option>
           <option value="other">Other</option>
-        </select>
-        <select
+        </Select>
+        <Select
           name="minConf"
           defaultValue={minConfPct != null ? String(minConfPct) : ""}
-          className="border rounded px-2 py-1.5"
         >
           <option value="">Any confidence</option>
           <option value="80">≥ 80%</option>
           <option value="60">≥ 60%</option>
           <option value="40">≥ 40%</option>
-        </select>
+        </Select>
 
-        <button className="px-3 py-1.5 rounded border" type="submit">
+        <Button variant="secondary" type="submit">
           Apply
-        </button>
+        </Button>
         <Link href="/email-ai/review" className="px-2 py-1.5 text-zinc-600 underline">
           Reset
         </Link>
@@ -271,41 +302,39 @@ function timeSince(date: Date) {
       </form>
 
       {/* Bulk actions (wired in ReviewClient) */}
-      <div className="flex items-center justify-between border rounded p-3 bg-white">
+      <Card className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-2 text-sm">
             <input id="chk-all" type="checkbox" className="h-4 w-4" />
             Select all on page
           </label>
-          <span id="selected-count" className="text-sm text-zinc-600">
-            0 selected
-          </span>
+          <Badge id="selected-count">0 selected</Badge>
         </div>
         <div className="flex items-center gap-2">
-          <button
+          <Button
             id="bulk-send"
-            className="px-3 py-1.5 rounded bg-indigo-600 text-white disabled:opacity-50"
+            variant="primary"
             disabled
             title="Enter to send (⌘/Ctrl+Enter on a focused item)"
           >
             Send selected
-          </button>
-          <button
+          </Button>
+          <Button
             id="bulk-skip"
-            className="px-3 py-1.5 rounded border disabled:opacity-50"
+            variant="secondary"
             disabled
           >
             Skip selected
-          </button>
+          </Button>
         </div>
-      </div>
+      </Card>
 
       {/* Items */}
       {items.length === 0 ? (
-        <div className="rounded border border-dashed p-10 text-center text-zinc-600 bg-white">
-          Nothing to review right now. Click <b>Refresh</b> in your browser or run a poll:
-          <code className="ml-1 rounded bg-zinc-100 px-1">POST /api/email-ai/poll</code>
-        </div>
+        <EmptyState
+          title="Nothing to review right now."
+          body="Sync runs automatically when Google is connected. Check back shortly."
+        />
       ) : (
         <ul id="queue-list" className="space-y-3">
           {items.map((i) => {
@@ -328,12 +357,13 @@ function timeSince(date: Date) {
             return (
               <li
                 key={i.id}
-                className="rounded border bg-white p-4"
+                className="list-none"
                 data-id={i.id}
                 data-suggested={suggested ? JSON.stringify(suggested) : ""}
                 data-class={i.classification ?? "other"}
                 data-conf={confPct != null ? String(confPct) : ""}
               >
+                <Card padded={false} className="p-4">
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex items-start gap-3">
                     <input type="checkbox" className="row-chk mt-1.5 h-4 w-4" />
@@ -342,22 +372,36 @@ function timeSince(date: Date) {
                       <div className="mt-0.5 font-medium">
                         {i.subject ?? "(no subject)"}
                       </div>
-                      <div className="mt-0.5 flex items-center gap-2 text-xs text-zinc-600">
-                        <span className="inline-flex items-center gap-1">
-                          Class:
-                          <span className="rounded-full bg-zinc-100 px-2 py-0.5">
-                            {i.classification ?? "other"}
-                          </span>
-                        </span>
-                        <span className="inline-flex items-center gap-1">
-                          Conf:
-                          <span className={`rounded-full px-2 py-0.5 ${confBadge}`}>
-                            {confPct == null ? "—" : `${confPct}%`}
-                          </span>
-                        </span>
-                      </div>
-                    </div>
+                <div className="mt-0.5 flex items-center gap-2 text-xs text-zinc-600">
+                  <span className="inline-flex items-center gap-1">
+                    Class:
+                    <span className="rounded-full bg-zinc-100 px-2 py-0.5">
+                      {i.classification ?? "other"}
+                    </span>
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    Conf:
+                    <span className={`rounded-full px-2 py-0.5 ${confBadge}`}>
+                      {confPct == null ? "—" : `${confPct}%`}
+                    </span>
+                  </span>
+                </div>
+                <div className="mt-2">
+                  <div className="h-1.5 w-full rounded-full bg-zinc-100">
+                    <div
+                      className="h-1.5 rounded-full bg-zinc-900"
+                      style={{ width: `${confPct ?? 0}%` }}
+                    />
                   </div>
+                  <div className="mt-1 text-[11px] text-zinc-500">
+                    Threshold: {(confidenceThreshold * 100).toFixed(0)}% ·{" "}
+                    {confPct != null && confPct < confidenceThreshold * 100
+                      ? "Escalated for review"
+                      : "Above threshold"}
+                  </div>
+                </div>
+              </div>
+            </div>
 
                   <div className="flex items-center gap-3 shrink-0">
                     {i.gmailThreadId ? (
@@ -398,12 +442,12 @@ function timeSince(date: Date) {
                     {i.snippet || "—"}
                   </div>
 
-                  {/* Suggested reply block */}
-                  {suggested ? (
-                    <div className="mt-3 rounded border bg-zinc-50 p-3">
-                      <div className="text-xs font-medium text-zinc-700">
-                        Suggested reply
-                      </div>
+                {/* Suggested reply block */}
+                {suggested ? (
+                  <div className="mt-3 rounded border bg-zinc-50 p-3">
+                    <div className="text-xs font-medium text-zinc-700">
+                      Suggested reply
+                    </div>
                       {suggested.subject ? (
                         <div className="mt-1 text-sm">
                           <span className="font-medium">Subject: </span>
@@ -417,17 +461,29 @@ function timeSince(date: Date) {
                       ) : null}
                     </div>
                   ) : null}
+                  <div className="mt-3 rounded border border-zinc-200 bg-white p-3 text-xs text-zinc-600">
+                    <div className="font-medium text-zinc-700">Why this reply was queued</div>
+                    <div className="mt-1">
+                      {confPct != null && confPct < confidenceThreshold * 100
+                        ? "Confidence below threshold, so it needs your approval."
+                        : "Manual review required by rule or policy."}
+                    </div>
+                    <div className="mt-1 text-[11px] text-zinc-500">
+                      Matched: {i.classification ?? "other"} · Action: {i.action ?? "queued_for_review"}
+                    </div>
+                  </div>
                 </details>
 
                 {/* Actions */}
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    className="js-approve px-3 py-1.5 rounded bg-indigo-600 text-white"
+                  <Button
+                    variant="primary"
+                    className="js-approve"
                     data-id={i.id}
                     title="Send suggested reply"
                   >
                     Send suggested reply
-                  </button>
+                  </Button>
 
                   {/* Use an internal page so cookies (NextAuth) always apply */}
                   <Link
@@ -438,14 +494,16 @@ function timeSince(date: Date) {
                     Edit &amp; send…
                     </Link>
 
-                  <button
-                    className="js-skip px-3 py-1.5 rounded border text-zinc-600"
+                  <Button
+                    variant="secondary"
+                    className="js-skip"
                     data-id={i.id}
                     title="Skip this email"
                   >
                     Skip
-                  </button>
+                  </Button>
                 </div>
+                </Card>
               </li>
             );
           })}

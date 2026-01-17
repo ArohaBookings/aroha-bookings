@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { requireRetellContext } from "@/lib/retell/auth";
 import { prisma } from "@/lib/db";
-import { pushAppointmentToGoogle, updateAppointmentInGoogle, deleteAppointmentFromGoogle } from "@/lib/google-calendar";
+import { createOrUpdateAppointmentEvent } from "@/lib/integrations/google/syncAppointment";
 
 export const runtime = "nodejs";
 
@@ -29,6 +29,10 @@ export async function POST(req: Request) {
       data: { startsAt: newStart, endsAt: newEnd },
       select: { id: true, startsAt: true, endsAt: true, status: true },
     });
+
+    createOrUpdateAppointmentEvent(ctx.org.id, updated.id).catch((err) =>
+      console.error("google-sync(reschedule) error:", err)
+    );
 
     return NextResponse.json({ ok: true, appointment: updated });
   } catch (e: any) {

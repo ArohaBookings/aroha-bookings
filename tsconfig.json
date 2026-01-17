@@ -29,12 +29,6 @@
       ]
     },
     /* Global types + Next plugin */
-    "types": [
-      "node",
-      "next",
-      "react",
-      "react-dom"
-    ],
     "plugins": [
       {
         "name": "next"
@@ -49,7 +43,7 @@
   "pages/**/*",
   "prisma/**/*",
   ".next/types/**/*.ts",
-  "types/**/*.d.ts"        // 👈 ADD THIS LINE
+  "types/**/*.d.ts"
 ],
   "exclude": [
     "node_modules",

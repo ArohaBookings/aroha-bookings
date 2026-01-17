@@ -1,12 +1,15 @@
 // app/layout.tsx
 import "./globals.css";
 import React from "react";
-import Sidebar from "@/components/Sidebar";
+import AppShell from "@/components/AppShell";
 import Header from "@/components/Header";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
 import Providers from "./providers";
+import { prisma } from "@/lib/db";
+import { resolveBranding, type BrandingConfig } from "@/lib/branding";
+import { getOrgEntitlements, type OrgEntitlements } from "@/lib/entitlements";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,18 +28,39 @@ export default async function RootLayout({
   children: React.ReactNode;
 }) {
   // --- Your existing access logic (kept) ---
-  let showSidebar = false;
-  let hasAccess = false;
+  let showShell = false;
+  let org: { id: string; name: string; slug: string } | null = null;
+  let isSuperAdmin = false;
+  let user: { name?: string | null; email?: string | null } | null = null;
+  let branding: BrandingConfig | null = null;
+  let managePlanUrl: string | null = null;
+  let entitlements: OrgEntitlements | null = null;
 
   try {
     const session = await getServerSession(authOptions);
     if (session?.user?.email) {
-      const res = await requireOrgOrPurchase();
-      hasAccess = Boolean(res.org) || res.isSuperAdmin;
-      showSidebar = hasAccess;
+      const res = await requireOrgOrPurchase({ allowWithoutOrg: true });
+      org = res.org;
+      isSuperAdmin = res.isSuperAdmin;
+      user = { name: session.user.name, email: session.user.email };
+      showShell = true;
+      if (org?.id) {
+        const orgSettings = await prisma.orgSettings.findUnique({
+          where: { orgId: org.id },
+          select: { data: true },
+        });
+        const data = (orgSettings?.data as Record<string, unknown>) || {};
+        branding = resolveBranding(data);
+        const billing = (data.billing as Record<string, unknown>) || {};
+        managePlanUrl =
+          typeof billing.managePlanUrl === "string" && billing.managePlanUrl.trim()
+            ? billing.managePlanUrl.trim()
+            : null;
+        entitlements = await getOrgEntitlements(org.id);
+      }
     }
   } catch {
-    showSidebar = false;
+    showShell = false;
   }
 
   return (
@@ -44,36 +68,27 @@ export default async function RootLayout({
       <body className="min-h-screen flex flex-col bg-gray-50 text-zinc-900 antialiased">
         {/* Client providers so useSession() works anywhere */}
         <Providers>
-          {/* Global Header (unchanged) */}
-          <Header />
-
-          {/* Main shell */}
-          <div className="flex-1 flex w-full">
-            {/* Sidebar (desktop only) */}
-            {showSidebar && (
-              <aside
-                className="hidden md:flex flex-col w-64 bg-black text-white h-full"
-                aria-label="Main navigation"
-              >
-                <div className="flex-1 overflow-y-auto">
-                  <Sidebar />
-                </div>
-                <footer className="p-4 border-t border-zinc-800 text-xs text-zinc-400">
-                  © {new Date().getFullYear()} Aroha Systems
-                </footer>
-              </aside>
-            )}
-
-            {/* Content area */}
-            <main
-              id="content"
-              role="main"
-              className="flex-1 overflow-y-auto bg-white p-6 md:rounded-tl-lg"
+          {showShell ? (
+            <AppShell
+              user={user}
+              org={org}
+              isSuperAdmin={isSuperAdmin}
+              branding={branding}
+              managePlanUrl={managePlanUrl}
+              entitlements={entitlements}
             >
-              {/* Keep your max width wrapper */}
-              <div className="max-w-7xl mx-auto">{children}</div>
-            </main>
-          </div>
+              {children}
+            </AppShell>
+          ) : (
+            <>
+              <Header />
+              <main id="content" role="main" className="flex-1 bg-white">
+                <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+                  {children}
+                </div>
+              </main>
+            </>
+          )}
 
           {/* Global toasts/portals hook (no-op if you don’t have one yet) */}
           <div id="portal-root" />

@@ -2,7 +2,8 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { getGCal } from "@/lib/google-calendar";
+import { prisma } from "@/lib/db";
+import { getCalendarClient } from "@/lib/integrations/google/calendar";
 import type { calendar_v3 } from "googleapis";
 
 export const runtime = "nodejs";
@@ -29,13 +30,21 @@ export async function GET() {
       );
     }
 
-    // 2) Build Google Calendar client (may throw if tokens missing/expired)
-    const cal = await getGCal();
+    const membership = await prisma.membership.findFirst({
+      where: { user: { email: userEmail } },
+      select: { orgId: true },
+      orderBy: { orgId: "asc" },
+    });
+    if (!membership?.orgId) {
+      return NextResponse.json({ ok: false, error: "No organization" }, { status: 400 });
+    }
+
+    // 2) Build Google Calendar client from org connection
+    const cal = await getCalendarClient(membership.orgId);
     if (!cal) {
-      // Extra guard for TypeScript + safety
       return NextResponse.json(
         { ok: false, error: "Google Calendar client not available" },
-        { status: 500 },
+        { status: 401 },
       );
     }
 

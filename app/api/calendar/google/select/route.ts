@@ -51,14 +51,8 @@ export async function GET() {
     const googleAccountEmail = (data.googleAccountEmail as string | undefined) ?? null;
 
     // Check if we have a connection row for this org/provider/email
-    const connection = await prisma.calendarConnection.findUnique({
-      where: {
-        orgId_provider_accountEmail: {
-          orgId,
-          provider: "google",
-          accountEmail: email,
-        },
-      },
+    const connection = await prisma.calendarConnection.findFirst({
+      where: { orgId, provider: "google" },
       select: {
         id: true,
         orgId: true,
@@ -66,6 +60,7 @@ export async function GET() {
         accountEmail: true,
         expiresAt: true,
       },
+      orderBy: { updatedAt: "desc" },
     });
 
     const isConnected = Boolean(googleCalendarId && connection);
@@ -133,77 +128,66 @@ export async function POST(req: Request) {
 
     const isDisconnect = !calendarId;
 
-    // 3) Upsert / touch connection row (one per org/provider/email)
+    // 3) Require an existing org-scoped connection
     let connectionId: string | null = null;
-
     if (!isDisconnect) {
-      const row = await prisma.calendarConnection.upsert({
-        where: {
-          orgId_provider_accountEmail: {
-            orgId,
-            provider: "google",
-            accountEmail: email,
-          },
-        },
-        update: {
-          updatedAt: new Date(),
-        },
-        create: {
-          orgId,
-          provider: "google",
-          accountEmail: email,
-          // We’re using NextAuth session tokens, not persisting Google tokens here.
-          accessToken: "session",
-          refreshToken: "session",
-          expiresAt: new Date(Date.now() + 3600_000),
-        },
+      const existing = await prisma.calendarConnection.findFirst({
+        where: { orgId, provider: "google" },
+        select: { id: true, accountEmail: true },
+        orderBy: { updatedAt: "desc" },
       });
-      connectionId = row.id;
-    } else {
-      // Optional: if disconnecting, you can clean up the connection row
-      await prisma.calendarConnection.deleteMany({
-        where: {
-          orgId,
-          provider: "google",
-          accountEmail: email,
-        },
-      });
+      if (!existing) {
+        return NextResponse.json(
+          { ok: false, error: "Google connection not found. Connect Google first." },
+          { status: 400 },
+        );
+      }
+      connectionId = existing.id;
     }
 
-    // 4) Upsert OrgSettings JSON with googleCalendarId + googleAccountEmail
-    const existing = await prisma.orgSettings.upsert({
-      where: { orgId },
-      create: { orgId, data: {} },
-      update: {},
-    });
+// 4) Upsert OrgSettings JSON with googleCalendarId + googleAccountEmail
+const existing = await prisma.orgSettings.upsert({
+  where: { orgId },
+  create: { orgId, data: {} },
+  update: {},
+});
 
-    const data = { ...(existing.data as any) };
+const data = { ...(existing.data as any) };
 
-    if (isDisconnect) {
-      delete data.googleCalendarId;
-      // keep googleAccountEmail or also remove it if you want clean slate:
-      // delete data.googleAccountEmail;
-    } else {
-      data.googleCalendarId = calendarId;
-      // Store which Google account this org is tied to (for display)
-      data.googleAccountEmail = email;
-    }
+// ✅ define `connection` so TS stops complaining
+const connection = connectionId
+  ? await prisma.calendarConnection.findUnique({
+      where: { id: connectionId },
+      select: { accountEmail: true },
+    })
+  : null;
 
-    await prisma.orgSettings.update({
-      where: { orgId },
-      data: { data },
-    });
+if (isDisconnect) {
+  delete data.googleCalendarId;
+  // keep googleAccountEmail or also remove it if you want clean slate:
+  // delete data.googleAccountEmail;
+} else {
+  data.googleCalendarId = calendarId;
+  // Store which Google account this org is tied to (for display)
+  data.googleAccountEmail = connection?.accountEmail ?? email;
+}
 
-    return NextResponse.json(
-      {
-        ok: true,
-        mode: isDisconnect ? "disconnected" : "connected",
-        calendarId: isDisconnect ? null : calendarId,
-        connectionId,
-        accountEmail: email,
-      },
-      { status: 200 },
-    );
+await prisma.orgSettings.update({
+  where: { orgId },
+  data: { data },
+});
+
+return NextResponse.json(
+  {
+    ok: true,
+    mode: isDisconnect ? "disconnected" : "connected",
+    calendarId: isDisconnect ? null : calendarId,
+    connectionId,
+    accountEmail: connection?.accountEmail ?? email,
+  },
+  { status: 200 },
+);
+
   } catch (err: any) {
     if (err instanceof Error && err.message === "AUTH_MISSING") {
       return NextResponse.json(

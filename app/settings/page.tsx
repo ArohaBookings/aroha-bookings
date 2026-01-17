@@ -3,6 +3,8 @@
 
 import React, { useMemo, useState, useTransition, useRef, useEffect } from "react";
 import { loadAllSettings, saveAllSettings } from "./actions";
+import { Button } from "@/components/ui";
+import { BOOKING_FIELDS, BOOKING_TEMPLATE_OPTIONS, type BookingPageConfig } from "@/lib/booking/templates";
 
 
 
@@ -83,9 +85,53 @@ type Business = {
   address?: string;
   phone?: string;
   email?: string;
+  niche?: string;
 };
 
+type PlanLimits = {
+  bookingsPerMonth: number | null;
+  staffCount: number | null;
+  automations: number | null;
+};
+
+type PlanFeatures = Record<string, boolean>;
+
 const DAYS_MON_FIRST = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const NICHE_OPTIONS = [
+  { value: "HAIR_BEAUTY", label: "Hair & Beauty" },
+  { value: "TRADES", label: "Trades" },
+  { value: "DENTAL", label: "Dental" },
+  { value: "LAW", label: "Law" },
+  { value: "AUTO", label: "Automotive" },
+  { value: "MEDICAL", label: "Medical" },
+] as const;
+
+const NICHE_PRESETS: Record<string, { bookingRules?: Partial<BookingRules>; calendarPrefs?: Partial<CalendarPrefs> }> = {
+  HAIR_BEAUTY: {
+    bookingRules: { slotMin: 15, minLeadMin: 30, bufferBeforeMin: 5, bufferAfterMin: 5, maxAdvanceDays: 90 },
+    calendarPrefs: { workingStartMin: 9 * 60, workingEndMin: 19 * 60 },
+  },
+  TRADES: {
+    bookingRules: { slotMin: 30, minLeadMin: 120, bufferBeforeMin: 0, bufferAfterMin: 15, maxAdvanceDays: 60 },
+    calendarPrefs: { workingStartMin: 7 * 60, workingEndMin: 17 * 60 },
+  },
+  DENTAL: {
+    bookingRules: { slotMin: 30, minLeadMin: 60, bufferBeforeMin: 10, bufferAfterMin: 10, maxAdvanceDays: 120 },
+    calendarPrefs: { workingStartMin: 8 * 60, workingEndMin: 17 * 60 },
+  },
+  LAW: {
+    bookingRules: { slotMin: 60, minLeadMin: 120, bufferBeforeMin: 10, bufferAfterMin: 10, maxAdvanceDays: 90 },
+    calendarPrefs: { workingStartMin: 9 * 60, workingEndMin: 18 * 60 },
+  },
+  AUTO: {
+    bookingRules: { slotMin: 30, minLeadMin: 60, bufferBeforeMin: 5, bufferAfterMin: 10, maxAdvanceDays: 60 },
+    calendarPrefs: { workingStartMin: 8 * 60, workingEndMin: 18 * 60 },
+  },
+  MEDICAL: {
+    bookingRules: { slotMin: 15, minLeadMin: 60, bufferBeforeMin: 5, bufferAfterMin: 5, maxAdvanceDays: 120 },
+    calendarPrefs: { workingStartMin: 8 * 60, workingEndMin: 17 * 60 },
+  },
+};
 
 /* ───────────────────────────────────────────────────────────────
    Small helpers
@@ -113,6 +159,17 @@ function minToTime(min: number): string {
 }
 
 function deepClone<T>(x: T): T { return JSON.parse(JSON.stringify(x)); }
+
+function mergeDefaults<T extends Record<string, any>>(target: T, defaults: Partial<T>): T {
+  const out = { ...target };
+  Object.entries(defaults).forEach(([key, value]) => {
+    const current = out[key as keyof T];
+    if (current === undefined || current === null) {
+      out[key as keyof T] = value as T[keyof T];
+    }
+  });
+  return out;
+}
 
 /** shallow sanity checks (client-side) */
 function validateBeforeSave(opts: {
@@ -186,6 +243,18 @@ export default function SettingsPage() {
     address: "",
     phone: "",
     email: "",
+    niche: undefined,
+  });
+  const [orgSlug, setOrgSlug] = useState("");
+  const [planName, setPlanName] = useState("PROFESSIONAL");
+  const [planLimits, setPlanLimits] = useState<PlanLimits>({
+    bookingsPerMonth: null,
+    staffCount: null,
+    automations: null,
+  });
+  const [planFeatures, setPlanFeatures] = useState<PlanFeatures>({});
+  const [billing, setBilling] = useState<{ managePlanUrl?: string }>({
+    managePlanUrl: "",
   });
 
   /* Opening hours (start closed; user opens the days they want) */
@@ -245,6 +314,15 @@ export default function SettingsPage() {
     workingEndMin: 17 * 60,
   });
 
+  function applyNicheTemplate() {
+    if (!business.niche) return;
+    const preset = NICHE_PRESETS[business.niche];
+    if (!preset) return;
+    setRules((prev) => mergeDefaults(prev, preset.bookingRules ?? {}));
+    setCalendarPrefs((prev) => mergeDefaults(prev, preset.calendarPrefs ?? {}));
+    markDirty();
+  }
+
 // --- hydrate Settings from DB on first render ---
 const [isLoading, setIsLoading] = useState(true);
 
@@ -263,6 +341,17 @@ useEffect(() => {
         address: data.business.address ?? "",
         phone: data.business.phone ?? "",
         email: data.business.email ?? "",
+        niche: data.business.niche ?? undefined,
+      });
+      setOrgSlug(data.orgSlug || "");
+      setPlanName(data.plan || "PROFESSIONAL");
+      setPlanLimits(data.planLimits || { bookingsPerMonth: null, staffCount: null, automations: null });
+      setPlanFeatures(data.planFeatures || {});
+      setBilling({
+        managePlanUrl: data.billing?.managePlanUrl || "",
+      });
+      setBilling({
+        managePlanUrl: data.billing?.managePlanUrl || "",
       });
 
     
@@ -394,6 +483,7 @@ for (const [sid, cells] of Object.entries(roster)) {
       notifications,
       onlineBooking: online,
       calendarPrefs,
+      billing,
     };
   }
 
@@ -433,6 +523,7 @@ for (const [sid, cells] of Object.entries(roster)) {
         if (obj.notifications) setNotifications(obj.notifications);
         if (obj.onlineBooking) setOnline(obj.onlineBooking);
         if (obj.calendarPrefs) setCalendarPrefs(obj.calendarPrefs);
+        if (obj.billing) setBilling(obj.billing);
         setLastSuccess("Imported JSON settings.");
         markDirty();
       } catch (e: any) {
@@ -443,6 +534,8 @@ for (const [sid, cells] of Object.entries(roster)) {
   }
 
   const activeStaff = useMemo(() => staff.filter((s) => s.active), [staff]);
+  const staffLimitReached =
+    planLimits.staffCount !== null && activeStaff.length >= planLimits.staffCount;
 
   return (
     <div className="p-6 space-y-10 text-black">
@@ -468,20 +561,14 @@ for (const [sid, cells] of Object.entries(roster)) {
               if (fileRef.current) fileRef.current.value = "";
             }}
           />
-          <button
-            className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50"
-            onClick={exportJSON}
-          >
+          <Button variant="secondary" onClick={exportJSON}>
             Export JSON
-          </button>
-          <button
-            className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50"
-            onClick={() => fileRef.current?.click()}
-          >
+          </Button>
+          <Button variant="secondary" onClick={() => fileRef.current?.click()}>
             Import JSON
-          </button>
-          <button
-            className="rounded-md bg-black text-white px-4 py-2 text-sm hover:bg-black/90 transition disabled:opacity-60"
+          </Button>
+          <Button
+            variant="primary"
             disabled={isSaving}
             onClick={() => {
   setLastError(null);
@@ -512,7 +599,12 @@ for (const [sid, cells] of Object.entries(roster)) {
         address: data.business.address ?? "",
         phone: data.business.phone ?? "",
         email: data.business.email ?? "",
+        niche: data.business.niche ?? undefined,
       });
+      setOrgSlug(data.orgSlug || "");
+      setPlanName(data.plan || "PROFESSIONAL");
+      setPlanLimits(data.planLimits || { bookingsPerMonth: null, staffCount: null, automations: null });
+      setPlanFeatures(data.planFeatures || {});
 
       // Opening hours (0..6 Sun..Sat)
       setOpeningHours(
@@ -575,7 +667,7 @@ setRoster(rosterMonFirst);
 }}
           >
             {isSaving ? "Saving…" : (dirty ? "Save changes *" : "Save changes")}
-          </button>
+          </Button>
         </div>
       </header>
 
@@ -592,10 +684,36 @@ setRoster(rosterMonFirst);
         </div>
       )}
 
+      <OnboardingResumeCard />
+      <BrandingCard />
+      <EmailIdentityCard />
+
       {/* Business */}
       <BusinessCard
         business={business}
         onChange={(b) => { setBusiness(b); markDirty(); }}
+      />
+
+      <PlanCard
+        planName={planName}
+        planLimits={planLimits}
+        planFeatures={planFeatures}
+        staffCount={activeStaff.length}
+        managePlanUrl={billing.managePlanUrl || "https://arohacalls.com"}
+      />
+
+      <BillingCard
+        billing={billing}
+        onChange={(next) => {
+          setBilling(next);
+          markDirty();
+        }}
+      />
+
+      <NicheTemplateCard
+        business={business}
+        onChange={(b) => { setBusiness(b); markDirty(); }}
+        onApply={applyNicheTemplate}
       />
 
       {/* Opening Hours */}
@@ -608,6 +726,9 @@ setRoster(rosterMonFirst);
       <StaffCard
         staff={staff}
         services={services}
+        planLimit={planLimits.staffCount}
+        limitReached={staffLimitReached}
+        planFeatures={planFeatures}
         onAdd={(s) => {
           setStaff((prev) => [...prev, s]);
           setRoster((prev) => {
@@ -686,10 +807,20 @@ setRoster(rosterMonFirst);
       <NotificationsCard notif={notifications} onChange={(n) => { setNotifications(n); markDirty(); }} />
 
       {/* Online booking */}
-      <OnlineBookingCard online={online} onChange={(o) => { setOnline(o); markDirty(); }} />
+      <OnlineBookingCard
+        online={online}
+        rules={rules}
+        orgSlug={orgSlug}
+        onChange={(o) => { setOnline(o); markDirty(); }}
+        onRulesChange={(next) => { setRules(next); markDirty(); }}
+      />
+
+      <BookingPageCard orgSlug={orgSlug} />
 
       {/* Calendar preferences */}
       <CalendarPrefsCard prefs={calendarPrefs} onChange={(c) => { setCalendarPrefs(c); markDirty(); }} />
+
+      <DataExportCard />
 
       {/* Sticky Save (mobile) */}
       <div className="sm:hidden fixed bottom-4 right-4">
@@ -768,6 +899,206 @@ function BusinessCard({
               placeholder="hello@example.com"
             />
           </label>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PlanCard({
+  planName,
+  planLimits,
+  planFeatures,
+  staffCount,
+  managePlanUrl,
+}: {
+  planName: string;
+  planLimits: PlanLimits;
+  planFeatures: PlanFeatures;
+  staffCount: number;
+  managePlanUrl: string;
+}) {
+  const featureList = [
+    { key: "booking", label: "Online booking", benefit: "Let clients book themselves 24/7." },
+    { key: "clientSelfService", label: "Client self-service", benefit: "Reschedule/cancel without staff calls." },
+    { key: "googleSync", label: "Google Calendar sync", benefit: "Keep external calendars in lockstep." },
+    { key: "automations", label: "Automations", benefit: "Reduce no-shows with smart rules." },
+    { key: "emailAI", label: "Email AI", benefit: "Auto-replies with confidence controls." },
+    { key: "calls", label: "Calls analytics", benefit: "Understand how calls convert." },
+    { key: "staffPortal", label: "Staff portal", benefit: "Self-serve schedules for staff." },
+    { key: "analytics", label: "Analytics dashboards", benefit: "Insights across bookings and ops." },
+  ];
+
+  const locked = featureList.filter((f) => planFeatures[f.key] === false);
+
+  return (
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <div className="px-5 py-3 border-b border-zinc-200 font-semibold">Plan & limits</div>
+      <div className="p-5 grid gap-4 md:grid-cols-[1.2fr_1fr]">
+        <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Current plan</div>
+          <div className="mt-2 text-lg font-semibold text-zinc-900">{planName}</div>
+          <div className="mt-3 grid gap-2 text-xs text-zinc-600">
+            <div>
+              Bookings/month:{" "}
+              <span className="font-medium text-zinc-800">
+                {planLimits.bookingsPerMonth ?? "Unlimited"}
+              </span>
+            </div>
+            <div>
+              Staff limit:{" "}
+              <span className="font-medium text-zinc-800">
+                {planLimits.staffCount ?? "Unlimited"} ({staffCount} active)
+              </span>
+            </div>
+            <div>
+              Automations:{" "}
+              <span className="font-medium text-zinc-800">
+                {planLimits.automations ?? "Unlimited"}
+              </span>
+            </div>
+          </div>
+          <p className="mt-3 text-xs text-zinc-500">
+            Limits are soft; exceeded usage is highlighted so you can upgrade at the right time.
+          </p>
+          <a
+            href={managePlanUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-4 inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-700 shadow-sm hover:border-emerald-200 hover:bg-emerald-50"
+          >
+            Manage plan
+          </a>
+        </div>
+
+        <div className="rounded-lg border border-zinc-200 bg-white p-4">
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Locked features</div>
+          <div className="mt-3 space-y-2 text-xs text-zinc-600">
+            {locked.length === 0 && (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-700">
+                All features are unlocked on this plan.
+              </div>
+            )}
+            {locked.map((f) => (
+              <div key={f.key} className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2">
+                <div className="font-medium text-zinc-800">{f.label}</div>
+                <div className="text-zinc-500">{f.benefit}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function BillingCard({
+  billing,
+  onChange,
+}: {
+  billing: { managePlanUrl?: string };
+  onChange: (next: { managePlanUrl?: string }) => void;
+}) {
+  return (
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <div className="px-5 py-3 border-b border-zinc-200 font-semibold">Billing</div>
+      <div className="p-5 grid gap-3 sm:grid-cols-[1fr_auto] items-end">
+        <label className="grid gap-1 text-sm">
+          <span className="text-xs text-zinc-700">Manage plan URL</span>
+          <input
+            className="h-10 rounded-md border border-zinc-300 px-3 outline-none focus:ring-2 focus:ring-black/10"
+            value={billing.managePlanUrl || ""}
+            onChange={(e) => onChange({ ...billing, managePlanUrl: e.target.value })}
+            placeholder="https://arohacalls.com"
+          />
+        </label>
+        <a
+          href={billing.managePlanUrl || "https://arohacalls.com"}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex h-10 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-xs font-semibold text-zinc-700 shadow-sm hover:border-emerald-200 hover:bg-emerald-50"
+        >
+          Open manage plan
+        </a>
+      </div>
+    </section>
+  );
+}
+
+function NicheTemplateCard({
+  business,
+  onChange,
+  onApply,
+}: {
+  business: Business;
+  onChange: (b: Business) => void;
+  onApply: () => void;
+}) {
+  return (
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <div className="px-5 py-3 border-b border-zinc-200 font-semibold">Business type</div>
+      <div className="p-5 grid gap-4 md:grid-cols-[1fr_auto] items-end">
+        <label className="grid gap-1 text-sm">
+          <span className="text-xs text-zinc-700">Niche / Industry</span>
+          <select
+            value={business.niche ?? ""}
+            onChange={(e) => onChange({ ...business, niche: e.target.value || undefined })}
+            className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm"
+          >
+            <option value="">Select business type</option>
+            {NICHE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-zinc-500">
+            Apply a template to set sensible defaults without overwriting your custom settings.
+          </p>
+        </label>
+        <button
+          type="button"
+          onClick={onApply}
+          disabled={!business.niche}
+          className="h-10 rounded-lg border border-zinc-300 px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          Apply template
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function DataExportCard() {
+  return (
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <div className="px-5 py-3 border-b border-zinc-200 font-semibold">Data export</div>
+      <div className="p-5 grid gap-4 md:grid-cols-2">
+        <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm">
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Appointments</div>
+          <p className="mt-2 text-xs text-zinc-500">
+            Download a CSV of all appointments for your organisation.
+          </p>
+          <Button
+            variant="secondary"
+            onClick={() => window.location.assign("/api/org/export/appointments")}
+            className="mt-3"
+          >
+            Export appointments
+          </Button>
+        </div>
+        <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm">
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Calls</div>
+          <p className="mt-2 text-xs text-zinc-500">
+            Download a CSV of call logs, transcripts, and outcomes.
+          </p>
+          <Button
+            variant="secondary"
+            onClick={() => window.location.assign("/api/org/export/calls")}
+            className="mt-3"
+          >
+            Export calls
+          </Button>
         </div>
       </div>
     </section>
@@ -869,12 +1200,18 @@ function StaffCard({
   onAdd,
   onUpdate,
   onDelete,
+  planLimit,
+  limitReached,
+  planFeatures,
 }: {
   staff: Staff[];
   services: Service[];
   onAdd: (s: Staff) => void;
   onUpdate: (id: string, patch: Partial<Staff>) => void;
   onDelete: (id: string) => void;
+  planLimit: number | null;
+  limitReached: boolean;
+  planFeatures: PlanFeatures;
 }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -882,9 +1219,27 @@ function StaffCard({
 
   return (
     <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
-      <div className="px-5 py-3 border-b border-zinc-200 font-semibold">Staff</div>
+      <div className="px-5 py-3 border-b border-zinc-200 font-semibold flex items-center justify-between">
+        <span>Staff</span>
+        {planLimit !== null ? (
+          <span className="text-xs font-medium text-zinc-500">
+            {staff.length} / {planLimit} staff
+          </span>
+        ) : null}
+      </div>
 
       <div className="p-5">
+        {!planFeatures.staffPortal && (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            Staff portal is locked on your current plan. Upgrade to unlock staff self-serve tools.
+          </div>
+        )}
+        {limitReached && (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            You are at your staff limit. You can still add staff, but advanced scheduling features may
+            be capped until you upgrade.
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead className="bg-zinc-50 text-black">
@@ -1478,15 +1833,37 @@ function NotificationsCard({
    ─────────────────────────────────────────────────────────────── */
 function OnlineBookingCard({
   online,
+  rules,
+  orgSlug,
   onChange,
+  onRulesChange,
 }: {
   online: OnlineBooking;
+  rules: BookingRules;
+  orgSlug: string;
   onChange: (o: OnlineBooking) => void;
+  onRulesChange: (r: BookingRules) => void;
 }) {
+  const appUrl = (process.env.NEXT_PUBLIC_APP_URL || "").trim();
+  const bookingUrl = appUrl && orgSlug ? `${appUrl.replace(/\/$/, "")}/book/${orgSlug}` : "";
+  const [copied, setCopied] = useState(false);
+
+  async function copyLink() {
+    if (!bookingUrl) return;
+    try {
+      await navigator.clipboard.writeText(bookingUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  }
+
   return (
     <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
       <div className="px-5 py-3 border-b border-zinc-200 font-semibold">Online booking</div>
-      <div className="p-5 grid gap-4 sm:grid-cols-3">
+      <div className="p-5 grid gap-6">
+        <div className="grid gap-4 sm:grid-cols-3">
         <div className="grid gap-1">
           <span className="text-xs text-zinc-700">Enabled</span>
           <label className="inline-flex items-center gap-2">
@@ -1530,6 +1907,517 @@ function OnlineBookingCard({
             money
           />
         </div>
+        </div>
+
+        <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Booking link</div>
+            <span className="ml-auto text-xs text-zinc-500">
+              {appUrl ? "" : "Set NEXT_PUBLIC_APP_URL"}
+            </span>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="rounded-md bg-white px-3 py-2 text-xs text-zinc-700 border border-zinc-200">
+              {bookingUrl || "Configure NEXT_PUBLIC_APP_URL to enable the link"}
+            </span>
+            <button
+              type="button"
+              onClick={copyLink}
+              disabled={!bookingUrl}
+              className="rounded-md border border-zinc-300 px-3 py-2 text-xs text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+            >
+              {copied ? "Copied" : "Copy link"}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-4">
+          <NumberField
+            label="Slot interval (min)"
+            value={rules.slotMin}
+            min={5}
+            step={5}
+            onChange={(v) => onRulesChange({ ...rules, slotMin: Math.round(v) })}
+          />
+          <NumberField
+            label="Lead time (min)"
+            value={rules.minLeadMin}
+            min={0}
+            step={15}
+            onChange={(v) => onRulesChange({ ...rules, minLeadMin: Math.round(v) })}
+          />
+          <NumberField
+            label="Buffer before (min)"
+            value={rules.bufferBeforeMin}
+            min={0}
+            step={5}
+            onChange={(v) => onRulesChange({ ...rules, bufferBeforeMin: Math.round(v) })}
+          />
+          <NumberField
+            label="Buffer after (min)"
+            value={rules.bufferAfterMin}
+            min={0}
+            step={5}
+            onChange={(v) => onRulesChange({ ...rules, bufferAfterMin: Math.round(v) })}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ───────────────────────────────────────────────────────────────
+   Booking Page (Public)
+   ─────────────────────────────────────────────────────────────── */
+function BookingPageCard({ orgSlug }: { orgSlug: string }) {
+  const [config, setConfig] = useState<BookingPageConfig | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/org/booking-page", { cache: "no-store" });
+        const j = await res.json();
+        if (!res.ok || !j?.ok) throw new Error(j?.error || "Failed to load booking page settings");
+        if (alive) setConfig(j.config as BookingPageConfig);
+      } catch (e: any) {
+        if (alive) setError(e?.message || "Failed to load booking page settings");
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const previewUrl = orgSlug
+    ? `${(process.env.NEXT_PUBLIC_APP_URL || "").replace(/\/$/, "")}/book/${orgSlug}`
+    : "";
+
+  if (!config) {
+    return (
+      <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+        <div className="px-5 py-3 border-b border-zinc-200 font-semibold">Public booking page</div>
+        <div className="p-5 text-sm text-zinc-600">Loading booking page settings…</div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <div className="px-5 py-3 border-b border-zinc-200 font-semibold flex items-center justify-between">
+        <span>Public booking page</span>
+        <div className="flex items-center gap-2">
+          {previewUrl ? (
+            <a className="text-sm underline" href={previewUrl} target="_blank" rel="noreferrer">
+              Preview
+            </a>
+          ) : null}
+          <Button
+            variant={dirty ? "primary" : "secondary"}
+            onClick={async () => {
+              setSaving(true);
+              setError(null);
+              try {
+                const res = await fetch("/api/org/booking-page", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(config),
+                });
+                const j = await res.json();
+                if (!res.ok || !j?.ok) throw new Error(j?.error || "Save failed");
+                setConfig(j.config as BookingPageConfig);
+                setDirty(false);
+              } catch (e: any) {
+                setError(e?.message || "Save failed");
+              } finally {
+                setSaving(false);
+              }
+            }}
+            disabled={saving || !dirty}
+          >
+            {saving ? "Saving…" : "Save booking page"}
+          </Button>
+        </div>
+      </div>
+
+      <div className="p-5 grid gap-5">
+        {error && <div className="text-sm text-rose-600">{error}</div>}
+
+        <div className="grid gap-2">
+          <label className="text-xs text-zinc-600">Template</label>
+          <select
+            className="border rounded px-3 py-2"
+            value={config.template}
+            onChange={(e) => {
+              setConfig({ ...config, template: e.target.value as BookingPageConfig["template"] });
+              setDirty(true);
+            }}
+          >
+            {BOOKING_TEMPLATE_OPTIONS.map((opt) => (
+              <option key={opt.key} value={opt.key}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="grid gap-2">
+          <label className="text-xs text-zinc-600">Headline</label>
+          <input
+            className="border rounded px-3 py-2"
+            value={config.content.headline}
+            onChange={(e) => {
+              setConfig({ ...config, content: { ...config.content, headline: e.target.value } });
+              setDirty(true);
+            }}
+          />
+        </div>
+
+        <div className="grid gap-2">
+          <label className="text-xs text-zinc-600">Subheadline</label>
+          <textarea
+            className="border rounded px-3 py-2 min-h-[90px]"
+            value={config.content.subheadline}
+            onChange={(e) => {
+              setConfig({ ...config, content: { ...config.content, subheadline: e.target.value } });
+              setDirty(true);
+            }}
+          />
+        </div>
+        <div className="grid gap-2">
+          <label className="text-xs text-zinc-600">Helpful tips (one per line)</label>
+          <textarea
+            className="border rounded px-3 py-2 min-h-[90px]"
+            value={config.content.tips.join("\n")}
+            onChange={(e) => {
+              const tips = e.target.value
+                .split("\n")
+                .map((t) => t.trim())
+                .filter(Boolean);
+              setConfig({ ...config, content: { ...config.content, tips } });
+              setDirty(true);
+            }}
+          />
+        </div>
+
+        <div className="grid gap-2">
+          <label className="text-xs text-zinc-600">Trust badges (one per line)</label>
+          <textarea
+            className="border rounded px-3 py-2 min-h-[90px]"
+            value={config.content.trustBadges.join("\n")}
+            onChange={(e) => {
+              const trustBadges = e.target.value
+                .split("\n")
+                .map((t) => t.trim())
+                .filter(Boolean);
+              setConfig({ ...config, content: { ...config.content, trustBadges } });
+              setDirty(true);
+            }}
+          />
+        </div>
+
+        <div className="grid gap-3">
+          <div className="text-sm font-medium text-zinc-800">Extra fields (optional)</div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {Object.entries(BOOKING_FIELDS).map(([key, field]) => (
+              <label key={key} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={config.fields[key as keyof typeof BOOKING_FIELDS]}
+                  onChange={(e) => {
+                    setConfig({
+                      ...config,
+                      fields: {
+                        ...config.fields,
+                        [key]: e.target.checked,
+                      },
+                    });
+                    setDirty(true);
+                  }}
+                />
+                {field.label}
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function OnboardingResumeCard() {
+  return (
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <div className="px-5 py-3 border-b border-zinc-200 font-semibold">Onboarding</div>
+      <div className="p-5 flex flex-wrap items-center gap-3">
+        <div className="text-sm text-zinc-600">
+          Re-open the guided onboarding flow to connect Google, tune inbox automation, and share your booking page.
+        </div>
+        <div className="ml-auto">
+          <Button variant="secondary" onClick={() => (window.location.href = "/onboarding")}>
+            Open onboarding
+          </Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function BrandingCard() {
+  const [branding, setBranding] = useState<{
+    logoUrl?: string;
+    logoDarkUrl?: string;
+    faviconUrl?: string;
+    primaryColor?: string;
+    wordmark?: string;
+  } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/org/branding", { cache: "no-store" });
+        const j = await res.json();
+        if (!res.ok || !j?.ok) throw new Error(j?.error || "Failed to load branding");
+        if (alive) setBranding(j.branding || {});
+      } catch (e: any) {
+        if (alive) setError(e?.message || "Failed to load branding");
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (!branding) {
+    return (
+      <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+        <div className="px-5 py-3 border-b border-zinc-200 font-semibold">Branding</div>
+        <div className="p-5 text-sm text-zinc-600">Loading branding…</div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <div className="px-5 py-3 border-b border-zinc-200 font-semibold flex items-center justify-between">
+        <span>Branding</span>
+        <Button
+          variant={dirty ? "primary" : "secondary"}
+          disabled={!dirty || saving}
+          onClick={async () => {
+            setSaving(true);
+            setError(null);
+            try {
+              const res = await fetch("/api/org/branding", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(branding),
+              });
+              const j = await res.json();
+              if (!res.ok || !j?.ok) throw new Error(j?.error || "Save failed");
+              setBranding(j.branding || branding);
+              setDirty(false);
+            } catch (e: any) {
+              setError(e?.message || "Save failed");
+            } finally {
+              setSaving(false);
+            }
+          }}
+        >
+          {saving ? "Saving…" : "Save branding"}
+        </Button>
+      </div>
+      <div className="p-5 grid gap-4 sm:grid-cols-2">
+        {error && <div className="text-sm text-rose-600 sm:col-span-2">{error}</div>}
+        <label className="grid gap-1">
+          <span className="text-xs text-zinc-700">Wordmark</span>
+          <input
+            className="h-10 rounded-md border border-zinc-300 px-3"
+            value={branding.wordmark || ""}
+            onChange={(e) => {
+              setBranding({ ...branding, wordmark: e.target.value });
+              setDirty(true);
+            }}
+            placeholder="Aroha Bookings"
+          />
+        </label>
+        <label className="grid gap-1">
+          <span className="text-xs text-zinc-700">Primary color</span>
+          <input
+            className="h-10 rounded-md border border-zinc-300 px-3"
+            value={branding.primaryColor || ""}
+            onChange={(e) => {
+              setBranding({ ...branding, primaryColor: e.target.value });
+              setDirty(true);
+            }}
+            placeholder="#10B981"
+          />
+        </label>
+        <label className="grid gap-1 sm:col-span-2">
+          <span className="text-xs text-zinc-700">Logo URL (light)</span>
+          <input
+            className="h-10 rounded-md border border-zinc-300 px-3"
+            value={branding.logoUrl || ""}
+            onChange={(e) => {
+              setBranding({ ...branding, logoUrl: e.target.value });
+              setDirty(true);
+            }}
+            placeholder="https://…/logo-light.png"
+          />
+        </label>
+        <label className="grid gap-1 sm:col-span-2">
+          <span className="text-xs text-zinc-700">Logo URL (dark)</span>
+          <input
+            className="h-10 rounded-md border border-zinc-300 px-3"
+            value={branding.logoDarkUrl || ""}
+            onChange={(e) => {
+              setBranding({ ...branding, logoDarkUrl: e.target.value });
+              setDirty(true);
+            }}
+            placeholder="https://…/logo-dark.png"
+          />
+        </label>
+        <label className="grid gap-1 sm:col-span-2">
+          <span className="text-xs text-zinc-700">Favicon URL</span>
+          <input
+            className="h-10 rounded-md border border-zinc-300 px-3"
+            value={branding.faviconUrl || ""}
+            onChange={(e) => {
+              setBranding({ ...branding, faviconUrl: e.target.value });
+              setDirty(true);
+            }}
+            placeholder="https://…/favicon.png"
+          />
+        </label>
+      </div>
+    </section>
+  );
+}
+
+function EmailIdentityCard() {
+  const [identity, setIdentity] = useState<{
+    fromName?: string;
+    replyTo?: string;
+    supportEmail?: string;
+    footerText?: string;
+  } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/org/email-identity", { cache: "no-store" });
+        const j = await res.json();
+        if (!res.ok || !j?.ok) throw new Error(j?.error || "Failed to load email identity");
+        if (alive) setIdentity(j.identity || {});
+      } catch (e: any) {
+        if (alive) setError(e?.message || "Failed to load email identity");
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (!identity) {
+    return (
+      <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+        <div className="px-5 py-3 border-b border-zinc-200 font-semibold">Email identity</div>
+        <div className="p-5 text-sm text-zinc-600">Loading email identity…</div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <div className="px-5 py-3 border-b border-zinc-200 font-semibold flex items-center justify-between">
+        <span>Email identity</span>
+        <Button
+          variant={dirty ? "primary" : "secondary"}
+          disabled={!dirty || saving}
+          onClick={async () => {
+            setSaving(true);
+            setError(null);
+            try {
+              const res = await fetch("/api/org/email-identity", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(identity),
+              });
+              const j = await res.json();
+              if (!res.ok || !j?.ok) throw new Error(j?.error || "Save failed");
+              setIdentity(j.identity || identity);
+              setDirty(false);
+            } catch (e: any) {
+              setError(e?.message || "Save failed");
+            } finally {
+              setSaving(false);
+            }
+          }}
+        >
+          {saving ? "Saving…" : "Save identity"}
+        </Button>
+      </div>
+      <div className="p-5 grid gap-4 sm:grid-cols-2">
+        {error && <div className="text-sm text-rose-600 sm:col-span-2">{error}</div>}
+        <label className="grid gap-1 sm:col-span-2">
+          <span className="text-xs text-zinc-700">From name</span>
+          <input
+            className="h-10 rounded-md border border-zinc-300 px-3"
+            value={identity.fromName || ""}
+            onChange={(e) => {
+              setIdentity({ ...identity, fromName: e.target.value });
+              setDirty(true);
+            }}
+            placeholder="Aroha Bookings via Aroha"
+          />
+        </label>
+        <label className="grid gap-1">
+          <span className="text-xs text-zinc-700">Reply-to email</span>
+          <input
+            className="h-10 rounded-md border border-zinc-300 px-3"
+            value={identity.replyTo || ""}
+            onChange={(e) => {
+              setIdentity({ ...identity, replyTo: e.target.value });
+              setDirty(true);
+            }}
+            placeholder="hello@yourdomain.com"
+          />
+        </label>
+        <label className="grid gap-1">
+          <span className="text-xs text-zinc-700">Support email</span>
+          <input
+            className="h-10 rounded-md border border-zinc-300 px-3"
+            value={identity.supportEmail || ""}
+            onChange={(e) => {
+              setIdentity({ ...identity, supportEmail: e.target.value });
+              setDirty(true);
+            }}
+            placeholder="support@yourdomain.com"
+          />
+        </label>
+        <label className="grid gap-1 sm:col-span-2">
+          <span className="text-xs text-zinc-700">Footer text</span>
+          <textarea
+            className="h-20 rounded-md border border-zinc-300 px-3 py-2"
+            value={identity.footerText || ""}
+            onChange={(e) => {
+              setIdentity({ ...identity, footerText: e.target.value });
+              setDirty(true);
+            }}
+            placeholder="You’re receiving this message because you booked with us."
+          />
+        </label>
       </div>
     </section>
   );

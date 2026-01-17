@@ -2,6 +2,9 @@
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { auth } from "@/lib/auth";
+import OnboardingClient from "@/app/onboarding/OnboardingClient";
+import { resolveOnboardingState } from "@/lib/onboarding";
+import { resolveBranding } from "@/lib/branding";
 
 export const dynamic = "force-dynamic";
 
@@ -23,13 +26,26 @@ export default async function OnboardingPage() {
   }
   const email = session.user.email as string;
 
-  // 2) If user already has an org, send them to settings (or dashboard)
+  // 2) If user already has an org, show the guided onboarding flow
   const existing = await prisma.membership.findFirst({
     where: { user: { email } },
     include: { org: true },
   });
   if (existing?.org) {
-    redirect("/settings");
+    const orgSettings = await prisma.orgSettings.findUnique({
+      where: { orgId: existing.org.id },
+      select: { data: true },
+    });
+    const data = (orgSettings?.data as Record<string, unknown>) || {};
+    const onboarding = resolveOnboardingState(data);
+    const branding = resolveBranding(data);
+    return (
+      <OnboardingClient
+        org={{ id: existing.org.id, name: existing.org.name, slug: existing.org.slug }}
+        onboarding={onboarding}
+        branding={branding}
+      />
+    );
   }
 
   // 3) Server action to create org + defaults
@@ -133,8 +149,33 @@ export default async function OnboardingPage() {
       // Defaults are non-critical, ignore failures
     }
 
-    // Send them straight to Settings to finish configuration
-    redirect("/settings");
+    // Seed onboarding state and send them into the guided flow
+    await prisma.orgSettings.upsert({
+      where: { orgId: org.id },
+      update: {
+        data: {
+          onboarding: {
+            step: 1,
+            completed: false,
+            skipped: false,
+            updatedAt: new Date().toISOString(),
+          },
+        } as any,
+      },
+      create: {
+        orgId: org.id,
+        data: {
+          onboarding: {
+            step: 1,
+            completed: false,
+            skipped: false,
+            updatedAt: new Date().toISOString(),
+          },
+        } as any,
+      },
+    });
+
+    redirect("/onboarding?step=1");
   }
 
   // 5) UI

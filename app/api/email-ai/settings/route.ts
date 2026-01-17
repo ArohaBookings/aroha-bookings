@@ -1,10 +1,11 @@
 // app/api/email-ai/settings/route.ts
 import { NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/db";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
+import { requireSessionOrgFeature } from "@/lib/entitlements";
 
 // ─────────────────────────────────────────────
 // Environment / Route config
@@ -46,20 +47,14 @@ function safeRegex(pattern?: string | null) {
 
 /** Auth + org context */
 async function getAuthedContext() {
+  const gate = await requireSessionOrgFeature("emailAi");
+  if (!gate.ok) {
+    return { error: gate.error || "Not authorized", status: gate.status as const };
+  }
+
   const session = await getServerSession(authOptions);
-  if (!session?.user?.email)
-    return { error: "Not authenticated", status: 401 as const };
-
-  const membership = await prisma.membership.findFirst({
-    where: { user: { email: session.user.email } },
-    select: { orgId: true },
-    orderBy: { orgId: "asc" },
-  });
-  if (!membership?.orgId)
-    return { error: "No organization", status: 400 as const };
-
   const googleConnected = Boolean((session as any)?.google?.access_token);
-  return { orgId: membership.orgId, googleConnected };
+  return { orgId: gate.orgId, googleConnected };
 }
 
 // ─────────────────────────────────────────────

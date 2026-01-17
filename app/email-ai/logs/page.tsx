@@ -4,6 +4,11 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import Link from "next/link";
 import LogsClient from "./LogsClient";
+import Badge from "@/components/ui/Badge";
+import Button from "@/components/ui/Button";
+import Card from "@/components/ui/Card";
+import Input from "@/components/ui/Input";
+import Select from "@/components/ui/Select";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -14,9 +19,13 @@ const cls = (...c: (string | false | null | undefined)[]) =>
   c.filter(Boolean).join(" ");
 
 const pillTone: Record<string, string> = {
-  inquiry: "bg-emerald-100 text-emerald-800",
-  job: "bg-blue-100 text-blue-800",
-  support: "bg-sky-100 text-sky-800",
+  booking_request: "bg-emerald-100 text-emerald-800",
+  reschedule: "bg-sky-100 text-sky-800",
+  cancellation: "bg-rose-100 text-rose-800",
+  pricing: "bg-amber-100 text-amber-800",
+  complaint: "bg-rose-100 text-rose-800",
+  faq: "bg-zinc-100 text-zinc-700",
+  admin: "bg-indigo-100 text-indigo-800",
   spam: "bg-zinc-200 text-zinc-800",
   other: "bg-zinc-100 text-zinc-700",
   draft_created: "bg-indigo-100 text-indigo-800",
@@ -90,6 +99,14 @@ export default async function EmailAILogsPage() {
       </main>
     );
   }
+
+  const settings = orgId
+    ? await prisma.emailAISettings.findUnique({
+        where: { orgId },
+        select: { minConfidenceToSend: true },
+      })
+    : null;
+  const confidenceThreshold = settings?.minConfidenceToSend ?? 0.65;
 
   // ---- server window (stable cursor by createdAt; sorted by real time after)
   const PAGE = 200;
@@ -201,78 +218,83 @@ export default async function EmailAILogsPage() {
             <div className="text-xs text-zinc-600">
               Org: <b>{orgName}</b>
             </div>
+            <div className="text-[11px] text-zinc-500">
+              Confidence threshold: {(confidenceThreshold * 100).toFixed(0)}%
+            </div>
           </div>
 
           {/* Tabs */}
           <div className="inline-flex border rounded overflow-hidden">
             {["inbox", "drafts", "sent", "skipped", "all"].map((t) => (
-              <button
+              <Button
                 key={t}
-                className="tab px-3 py-1.5 text-sm"
+                variant="ghost"
+                className="tab rounded-none px-3 py-1.5 text-sm"
                 data-tab={t}
               >
                 {t[0].toUpperCase() + t.slice(1)}
-              </button>
+              </Button>
             ))}
           </div>
 
 {/* Search / filters */}
 <div className="flex items-center gap-2">
-  <input
+  <Input
     id="q"
     type="text"
     placeholder="Search subject/snippet…"
-    className="border rounded px-3 py-1.5 text-sm w-64"
+    className="w-64"
   />
-  <select id="cls" className="border rounded px-2 py-1.5 text-sm">
-    <option value="">All classes</option>
-    <option value="inquiry">Inquiry</option>
-    <option value="job">Job</option>
-    <option value="support">Support</option>
+  <Select id="cls">
+    <option value="">All categories</option>
+    <option value="booking_request">Booking request</option>
+    <option value="reschedule">Reschedule</option>
+    <option value="cancellation">Cancellation</option>
+    <option value="pricing">Pricing</option>
+    <option value="complaint">Complaint</option>
+    <option value="faq">FAQ</option>
+    <option value="admin">Admin</option>
     <option value="spam">Spam</option>
     <option value="other">Other</option>
-  </select>
-  <select id="minc" className="border rounded px-2 py-1.5 text-sm">
+  </Select>
+  <Select id="minc">
     <option value="">Any confidence</option>
     <option value="80">≥ 80 %</option>
     <option value="60">≥ 60 %</option>
     <option value="40">≥ 40 %</option>
-  </select>
+  </Select>
 </div>
 
 
           {/* Bulk & nav */}
           <div className="ml-auto flex items-center gap-2">
-            <span
-              id="sel-n"
-              className="text-xs px-2 py-1 bg-zinc-100 rounded"
-            >
+            <Badge id="sel-n" variant="neutral">
               0 selected
-            </span>
-            <button
+            </Badge>
+            <Button
               id="bulk-approve"
-              className="px-3 py-1.5 rounded bg-indigo-600 text-white text-sm disabled:opacity-50"
+              variant="primary"
               disabled
             >
               Bulk Approve
-            </button>
-            <button
+            </Button>
+            <Button
               id="bulk-skip"
-              className="px-3 py-1.5 rounded border text-sm disabled:opacity-50"
+              variant="secondary"
               disabled
             >
               Bulk Skip
-            </button>
-            <button id="refresh" className="px-3 py-1.5 border rounded text-sm">
+            </Button>
+            <Button id="refresh" variant="ghost">
               Refresh
-            </button>
+            </Button>
             <label className="text-xs md:text-sm flex items-center gap-2">
               <input id="auto" type="checkbox" className="h-4 w-4" />
               Auto-refresh
             </label>
             <Link
               href="/email-ai/review"
-              className="px-3 py-1.5 rounded bg-zinc-900 text-white text-sm"
+              className="rounded-md bg-black px-3 py-1.5 text-sm text-white"
             >
               Review Queue →
             </Link>
@@ -280,29 +302,20 @@ export default async function EmailAILogsPage() {
 
           {/* Counters */}
           <div className="w-full flex flex-wrap items-center gap-2">
-            <span className="px-2 py-1 bg-zinc-100 rounded text-xs">
-              Total: {stats.total}
-            </span>
-            <span className="px-2 py-1 bg-amber-100 text-amber-800 rounded text-xs">
-              Inbox: {stats.inbox}
-            </span>
-            <span className="px-2 py-1 bg-indigo-100 text-indigo-800 rounded text-xs">
-              Drafts: {stats.drafts}
-            </span>
-            <span className="px-2 py-1 bg-indigo-200 text-indigo-900 rounded text-xs">
-              Sent: {stats.sent}
-            </span>
-            <span className="px-2 py-1 bg-rose-100 text-rose-800 rounded text-xs">
-              Skipped: {stats.skipped}
-            </span>
+            <Badge>Total: {stats.total}</Badge>
+            <Badge variant="warning">Inbox: {stats.inbox}</Badge>
+            <Badge variant="info">Drafts: {stats.drafts}</Badge>
+            <Badge variant="info">Sent: {stats.sent}</Badge>
+            <Badge variant="warning">Skipped: {stats.skipped}</Badge>
           </div>
         </div>
       </div>
 
       {/* Two-pane */}
       <div className="px-3 md:px-4 pt-4 grid grid-cols-1 md:grid-cols-[520px,1fr] gap-4">
+        <div id="conf-threshold" data-value={confidenceThreshold} className="hidden" />
         {/* Left list */}
-        <div className="rounded border bg-white overflow-hidden">
+        <Card padded={false} className="overflow-hidden">
           <div className="h-10 px-3 border-b flex items-center justify-between text-xs text-zinc-600">
             <div>
               <label className="inline-flex items-center gap-2">
@@ -314,19 +327,19 @@ export default async function EmailAILogsPage() {
               </span>
             </div>
             <div className="flex items-center gap-2">
-              <button id="older" className="underline">
+              <Button id="older" variant="ghost" className="px-0 text-xs">
                 Load older
-              </button>
+              </Button>
             </div>
           </div>
           <ul
             id="list"
             className="divide-y divide-zinc-100 max-h-[78vh] overflow-auto"
           />
-        </div>
+        </Card>
 
         {/* Right preview / composer */}
-        <div className="rounded border bg-white overflow-hidden">
+        <Card padded={false} className="overflow-hidden">
           {/* Header for preview */}
           <div className="h-10 px-4 border-b flex items-center justify-between">
             <div className="text-sm font-medium" id="subj">
@@ -345,39 +358,40 @@ export default async function EmailAILogsPage() {
 
           {/* Composer + actions */}
           <div className="border-t p-3 flex flex-wrap items-center gap-2">
-            <button
+            <Button
               id="act-suggest"
-              className="px-3 py-1.5 rounded bg-amber-600 text-white text-sm disabled:opacity-50"
+              variant="secondary"
+              className="bg-amber-600 text-white hover:bg-amber-500"
               disabled
             >
               Suggest reply → Review
-            </button>
+            </Button>
 
             <span className="mx-2 text-zinc-300">|</span>
 
-            <button
+            <Button
               id="act-send"
-              className="px-3 py-1.5 rounded bg-indigo-600 text-white text-sm disabled:opacity-50"
+              variant="primary"
               disabled
             >
               Send
-            </button>
+            </Button>
 
-            <button
+            <Button
               id="act-save"
-              className="px-3 py-1.5 rounded border text-sm disabled:opacity-50"
+              variant="secondary"
               disabled
             >
               Save Draft
-            </button>
+            </Button>
 
-            <button
+            <Button
               id="act-skip"
-              className="px-3 py-1.5 rounded border text-sm text-zinc-700 disabled:opacity-50"
+              variant="ghost"
               disabled
             >
               Skip
-            </button>
+            </Button>
 
             <a
               id="act-gmail"
@@ -389,7 +403,7 @@ export default async function EmailAILogsPage() {
               Open in Gmail
             </a>
           </div>
-        </div>
+        </Card>
       </div>
 
       {/* Client app (all interactivity lives here) */}

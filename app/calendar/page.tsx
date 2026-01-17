@@ -29,6 +29,7 @@ export const dynamicParams = true;
 
 import React from "react";
 import Link from "next/link";
+import { Badge } from "@/components/ui";
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { unstable_noStore as noStore } from "next/cache";
@@ -36,6 +37,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
 import { getGCal } from "@/lib/google-calendar";
+import { getOrgEntitlements } from "@/lib/entitlements";
 
 import {
   FiltersBar,
@@ -77,6 +79,7 @@ type OrgRow = {
 type ApptRow = {
   id: string;
   orgId: string;
+  customerId: string | null;
   startsAt: Date;
   endsAt: Date;
   customerName: string;
@@ -86,6 +89,10 @@ type ApptRow = {
   staff: { id: string; name: string } | null;
   service: { id: string; name: string; durationMin: number } | null;
   status?: "SCHEDULED" | "COMPLETED" | "CANCELLED" | "NO_SHOW";
+  externalProvider?: string | null;
+  externalCalendarId?: string | null;
+  externalCalendarEventId?: string | null;
+  syncedAt?: Date | null;
 };
 
 /** Rendered block for GridColumn (serialized) */
@@ -460,20 +467,38 @@ export default async function CalendarPage({
   // --- Google Calendar connection status (OrgSettings -> data.googleCalendarId) ---
   let googleCalendarId: string | null = null;
   let googleAccountEmail: string | null = null;
+  let calendarSyncErrors: Array<{ appointmentId?: string; error?: string; ts?: string }> = [];
+  let calendarLastSyncAt: string | null = null;
+  let needsReconnect = false;
 
   if (org) {
     try {
-      const os = await prisma.orgSettings.findUnique({
-        where: { orgId: org.id },
-        select: { data: true },
-      });
+      const [os, connection] = await Promise.all([
+        prisma.orgSettings.findUnique({
+          where: { orgId: org.id },
+          select: { data: true },
+        }),
+        prisma.calendarConnection.findFirst({
+          where: { orgId: org.id, provider: "google" },
+          orderBy: { updatedAt: "desc" },
+          select: { accountEmail: true, expiresAt: true },
+        }),
+      ]);
       const data = (os?.data as any) ?? {};
       googleCalendarId = (data.googleCalendarId as string) ?? null;
-      googleAccountEmail = (data.googleAccountEmail as string) ?? null; // optional
+      googleAccountEmail = (data.googleAccountEmail as string) ?? connection?.accountEmail ?? null;
+      calendarSyncErrors = Array.isArray(data.calendarSyncErrors) ? data.calendarSyncErrors : [];
+      calendarLastSyncAt = typeof data.calendarLastSyncAt === "string" ? data.calendarLastSyncAt : null;
+      needsReconnect = connection?.expiresAt
+        ? connection.expiresAt.getTime() < Date.now() - 2 * 60 * 1000
+        : false;
     } catch {
       // swallow; render as "not connected"
       googleCalendarId = null;
       googleAccountEmail = null;
+      calendarSyncErrors = [];
+      calendarLastSyncAt = null;
+      needsReconnect = false;
     }
   }
 
@@ -495,6 +520,22 @@ export default async function CalendarPage({
             the onboarding page
           </a>{" "}
           to create your organisation.
+        </p>
+      </div>
+    );
+  }
+
+  const entitlements = await getOrgEntitlements(org.id);
+  if (!entitlements.features.calendar) {
+    return (
+      <div className="p-6">
+        <h1 className="text-2xl font-semibold tracking-tight">Calendar</h1>
+        <p className="mt-2 text-sm text-zinc-600">
+          Calendar access is disabled for this plan.{" "}
+          <a className="underline" href="/settings">
+            Upgrade to enable
+          </a>
+          .
         </p>
       </div>
     );
@@ -628,6 +669,7 @@ export default async function CalendarPage({
         select: {
           id: true,
           orgId: true,
+          customerId: true,
           startsAt: true,
           endsAt: true,
           customerName: true,
@@ -635,6 +677,10 @@ export default async function CalendarPage({
           staffId: true,
           serviceId: true,
           status: true,
+          externalProvider: true,
+          externalCalendarId: true,
+          externalCalendarEventId: true,
+          syncedAt: true,
           staff: { select: { id: true, name: true } },
           service: { select: { id: true, name: true, durationMin: true } },
         },
@@ -673,6 +719,13 @@ export default async function CalendarPage({
     return dayDelta * 24 * 60 + (minsB - minsA);
   }
 
+  const syncErrorByAppt = new Map<string, { message: string; ts?: string }>();
+  for (const err of calendarSyncErrors) {
+    const id = String(err?.appointmentId || "").trim();
+    const message = String(err?.error || "").trim();
+    if (id && message) syncErrorByAppt.set(id, { message, ts: err?.ts });
+  }
+
   function computeBlockLayoutForDay(
     _dayDateLocal: Date,
     openMin: number,
@@ -690,90 +743,117 @@ export default async function CalendarPage({
     return { top: topPx, height: heightPx };
   }
 
-  // WEEK blocks — 7 columns Mon..Sun
-  const weekBlocks: Block[][] = Array.from({ length: 7 }, () => []);
-  if (view === "week") {
-    for (const a of apptsRaw) {
-      const wdayOrg = tzMath.weekday(a.startsAt, org.timezone); // 0..6 (Sun..Sat)
-      const dIdx = (wdayOrg + 6) % 7; // Mon=0 .. Sun=6
+// WEEK blocks — 7 columns Mon..Sun
+const weekBlocks: Block[][] = Array.from({ length: 7 }, () => []);
 
-      const dayLocal = addDaysLocal(weekStartLocal, dIdx);
-      const hoursForDay = getHoursForDay(hours, wdayOrg);
-      const { top, height } = computeBlockLayoutForDay(
-        dayLocal,
-        hoursForDay.openMin,
-        a.startsAt,
-        a.endsAt,
-      );
+const getSyncFields = (a: (typeof apptsRaw)[number]) => {
+  return {
+    _syncProvider: a.externalProvider ?? null,
+    _syncCalendarId: a.externalCalendarId ?? null,
+    _syncEventId: a.externalCalendarEventId ?? null,
+    _syncedAt: a.syncedAt ? a.syncedAt.toISOString() : null,
+    _syncErrorMessage: syncErrorByAppt.get(a.id)?.message ?? null,
+    _syncErrorAt: syncErrorByAppt.get(a.id)?.ts ?? null,
+  } satisfies Record<string, unknown>;
+};
 
-      weekBlocks[dIdx].push({
-        id: a.id,
-        top,
-        height,
-        title: a.customerName,
-        subtitle: `${a.service?.name ?? "Service"} • ${a.staff?.name ?? "Staff"}`,
-        staffName: a.staff?.name ?? "Staff",
-        colorClass: colorForName(a.staff?.name ?? "Staff"),
-        startsAt: a.startsAt.toISOString(),
-        endsAt: a.endsAt.toISOString(),
-        staffId: a.staffId,
-        serviceId: a.serviceId,
-        _customerPhone: a.customerPhone ?? "",
-        _customerName: a.customerName ?? "",
-      });
+if (view === "week") {
+  for (const a of apptsRaw) {
+    const wdayOrg = tzMath.weekday(a.startsAt, org.timezone); // 0..6 (Sun..Sat)
+    const dIdx = (wdayOrg + 6) % 7; // Mon=0 .. Sun=6
+
+    const dayLocal = addDaysLocal(weekStartLocal, dIdx);
+    const hoursForDay = getHoursForDay(hours, wdayOrg);
+    const { top, height } = computeBlockLayoutForDay(
+      dayLocal,
+      hoursForDay.openMin,
+      a.startsAt,
+      a.endsAt,
+    );
+
+    const base: Block = {
+      id: a.id,
+      top,
+      height,
+      title: a.customerName,
+      subtitle: `${a.service?.name ?? "Service"} • ${a.staff?.name ?? "Staff"}`,
+      staffName: a.staff?.name ?? "Staff",
+      colorClass: colorForName(a.staff?.name ?? "Staff"),
+      startsAt: a.startsAt.toISOString(),
+      endsAt: a.endsAt.toISOString(),
+      staffId: a.staffId ?? null,
+      serviceId: a.serviceId ?? null,
+      _customerPhone: a.customerPhone ?? "",
+      _customerName: a.customerName ?? "",
+      // _customerId removed from Block-typed object (was causing TS2353)
+    };
+
+    weekBlocks[dIdx].push({
+      ...base,
+      ...(getSyncFields(a) as Partial<Block>),
+      ...({ _customerId: a.customerId ?? null } as Partial<Block> & { _customerId?: string | null }),
+    });
+  }
+}
+
+// DAY blocks — one column per *active* staff (+ optional “Unassigned”)
+const dayBlocksByStaff: Record<string, Block[]> = {};
+
+if (view === "day") {
+  for (const s of staff) {
+    if (s.active) dayBlocksByStaff[s.id] = [];
+  }
+
+  let hasUnassigned = false;
+
+  for (const a of apptsRaw) {
+    const wdayOrg = tzMath.weekday(a.startsAt, org.timezone);
+    if (wdayOrg !== weekdayInOrgTZ) continue;
+
+    const hoursForDay = dayHoursInOrgTZ;
+    const { top, height } = computeBlockLayoutForDay(
+      baseDateLocal,
+      hoursForDay.openMin,
+      a.startsAt,
+      a.endsAt,
+    );
+
+    const base: Block = {
+      id: a.id,
+      top,
+      height,
+      title: a.customerName,
+      subtitle: a.service?.name ?? "Service",
+      staffName: a.staff?.name ?? "Unassigned",
+      colorClass: colorForName(a.staff?.name ?? "Unassigned"),
+      startsAt: a.startsAt.toISOString(),
+      endsAt: a.endsAt.toISOString(),
+      staffId: a.staffId ?? null,
+      serviceId: a.serviceId ?? null,
+      _customerPhone: a.customerPhone ?? "",
+      _customerName: a.customerName ?? "",
+      // _customerId removed from Block-typed object (was causing TS2353)
+    };
+
+    const block: Block = {
+      ...base,
+      ...(getSyncFields(a) as Partial<Block>),
+      ...({ _customerId: a.customerId ?? null } as Partial<Block> & { _customerId?: string | null }),
+    };
+
+    if (a.staffId && dayBlocksByStaff[a.staffId]) {
+      dayBlocksByStaff[a.staffId].push(block);
+    } else {
+      hasUnassigned = true;
+      if (!dayBlocksByStaff["_unassigned"]) dayBlocksByStaff["_unassigned"] = [];
+      dayBlocksByStaff["_unassigned"].push(block);
     }
   }
 
-  // DAY blocks — one column per *active* staff (+ optional “Unassigned”)
-  const dayBlocksByStaff: Record<string, Block[]> = {};
-  if (view === "day") {
-    for (const s of staff) {
-      if (s.active) dayBlocksByStaff[s.id] = [];
-    }
-
-    let hasUnassigned = false;
-
-    for (const a of apptsRaw) {
-      const wdayOrg = tzMath.weekday(a.startsAt, org.timezone);
-      if (wdayOrg !== weekdayInOrgTZ) continue;
-
-      const hoursForDay = dayHoursInOrgTZ;
-      const { top, height } = computeBlockLayoutForDay(
-        baseDateLocal,
-        hoursForDay.openMin,
-        a.startsAt,
-        a.endsAt,
-      );
-
-      const block: Block = {
-        id: a.id,
-        top,
-        height,
-        title: a.customerName,
-        subtitle: a.service?.name ?? "Service",
-        staffName: a.staff?.name ?? "Unassigned",
-        colorClass: colorForName(a.staff?.name ?? "Unassigned"),
-        startsAt: a.startsAt.toISOString(),
-        endsAt: a.endsAt.toISOString(),
-        staffId: a.staffId,
-        serviceId: a.serviceId,
-        _customerPhone: a.customerPhone ?? "",
-        _customerName: a.customerName ?? "",
-      };
-
-      if (a.staffId && dayBlocksByStaff[a.staffId]) {
-        dayBlocksByStaff[a.staffId].push(block);
-      } else {
-        hasUnassigned = true;
-        if (!dayBlocksByStaff["_unassigned"]) dayBlocksByStaff["_unassigned"] = [];
-        dayBlocksByStaff["_unassigned"].push(block);
-      }
-    }
-
-    if (!hasUnassigned && dayBlocksByStaff["_unassigned"]) {
-      delete dayBlocksByStaff["_unassigned"];
-    }
+  if (!hasUnassigned && dayBlocksByStaff["_unassigned"]) {
+    delete dayBlocksByStaff["_unassigned"];
   }
+}
 
   /* ─────────────────────────────────────────────────────────────
      Navigation (prev/next/today) + URL builder
@@ -869,54 +949,58 @@ export default async function CalendarPage({
         <div className="flex flex-wrap items-center gap-2">
           {/* Nav buttons */}
           <Link
-            className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50"
+            className="rounded-full border border-zinc-200 bg-white px-4 py-1.5 text-sm font-medium text-zinc-700 shadow-sm hover:border-emerald-200 hover:bg-emerald-50"
             href={mkHref(prevDateLocal, view)}
           >
             ← Prev
           </Link>
           <Link
-            className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50"
+            className="rounded-full border border-zinc-200 bg-white px-4 py-1.5 text-sm font-medium text-zinc-700 shadow-sm hover:border-emerald-200 hover:bg-emerald-50"
             href={mkHref(todayLocal, view)}
           >
             Today
           </Link>
           <Link
-            className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50"
+            className="rounded-full border border-zinc-200 bg-white px-4 py-1.5 text-sm font-medium text-zinc-700 shadow-sm hover:border-emerald-200 hover:bg-emerald-50"
             href={mkHref(nextDateLocal, view)}
           >
             Next →
           </Link>
 
-          <div className="w-px h-6 bg-zinc-300 mx-1" />
+          <div className="w-px h-6 bg-zinc-200 mx-1" />
 
           {/* view switch */}
           <Link
             href={mkHref(baseDateLocal, "week")}
-            className={`rounded-md px-3 py-1.5 text-sm border ${
+            className={`rounded-full px-4 py-1.5 text-sm font-semibold border ${
               view === "week"
-                ? "bg-indigo-600 text-white border-indigo-600"
-                : "bg-white border-zinc-300 hover:bg-zinc-50"
+                ? "bg-[color:var(--brand-primary)] text-white border-transparent shadow-sm"
+                : "bg-white border-zinc-200 text-zinc-700 hover:border-emerald-200 hover:bg-emerald-50"
             }`}
           >
             Week
           </Link>
           <Link
             href={mkHref(baseDateLocal, "day")}
-            className={`rounded-md px-3 py-1.5 text-sm border ${
+            className={`rounded-full px-4 py-1.5 text-sm font-semibold border ${
               view === "day"
-                ? "bg-indigo-600 text-white border-indigo-600"
-                : "bg-white border-zinc-300 hover:bg-zinc-50"
+                ? "bg-[color:var(--brand-primary)] text-white border-transparent shadow-sm"
+                : "bg-white border-zinc-200 text-zinc-700 hover:border-emerald-200 hover:bg-emerald-50"
             }`}
           >
             Day
           </Link>
 
-          <div className="w-px h-6 bg-zinc-300 mx-1" />
+          <div className="w-px h-6 bg-zinc-200 mx-1" />
 
           {/* Google Calendar connect/sync (client chip doing POST) */}
           <GoogleCalendarConnectChip
             isGoogleConnected={isGoogleConnected}
             googleAccountEmail={googleAccountEmail}
+            orgId={org.id}
+            lastSyncAt={calendarLastSyncAt}
+            lastError={calendarSyncErrors[0]?.error ? String(calendarSyncErrors[0].error) : null}
+            needsReconnect={needsReconnect}
           />
 
           {/* filters/search — client island */}
@@ -949,7 +1033,7 @@ export default async function CalendarPage({
       {(normalizedQuery || staffFilter) && (
         <div className="mb-4 flex flex-wrap items-center gap-2">
           {normalizedQuery && (
-            <span className="inline-flex items-center gap-2 rounded-full border border-zinc-300 bg-white px-3 py-1 text-xs">
+            <Badge variant="neutral" className="gap-2">
               Search: <span className="font-medium">{normalizedQuery}</span>
               <Link
                 className="ml-1 underline text-zinc-600"
@@ -957,10 +1041,10 @@ export default async function CalendarPage({
               >
                 clear
               </Link>
-            </span>
+            </Badge>
           )}
           {staffFilter && (
-            <span className="inline-flex items-center gap-2 rounded-full border border-zinc-300 bg-white px-3 py-1 text-xs">
+            <Badge variant="neutral" className="gap-2">
               Staff:{" "}
               <span className="font-medium">
                 {staff.find((s) => s.id === staffFilter)?.name ?? "Unknown"}
@@ -971,7 +1055,7 @@ export default async function CalendarPage({
               >
                 clear
               </Link>
-            </span>
+            </Badge>
           )}
         </div>
       )}
@@ -1051,7 +1135,7 @@ export default async function CalendarPage({
                 return (
                   <div
                     key={i}
-                    className="h-12 border-l border-zinc-200 flex items-center justify-center gap-2"
+                    className="h-12 border-l border-zinc-200 bg-white/80 flex items-center justify-center gap-2 text-sm"
                   >
                     <span className="font-semibold text-zinc-700">{label}</span>
                     <span className="text-xs text-zinc-400">{dayLocal.getDate()}</span>
@@ -1107,11 +1191,11 @@ export default async function CalendarPage({
           }}
         >
           {/* Left time gutter */}
-          <div className="bg-zinc-50 border-r border-zinc-200">
+          <div className="bg-white border-r border-zinc-200">
             {gutterTimes.map((tm: Date, i: number) => (
               <div
                 key={i}
-                className="h-16 border-b border-zinc-100 text-xs text-zinc-500 flex items-start justify-end pr-3 pt-1"
+                className="h-16 border-b border-zinc-100/80 text-xs text-zinc-500 flex items-start justify-end pr-3 pt-1"
               >
                 {fmtTime(tm, displayTZ)}
               </div>
@@ -1146,7 +1230,7 @@ export default async function CalendarPage({
                     {/* off-hours shading (top) */}
                     {offTopPx > 0 && (
                       <div
-                        className="absolute left-0 right-0 bg-zinc-50/60 pointer-events-none"
+                        className="absolute left-0 right-0 bg-zinc-100/60 pointer-events-none"
                         style={{ top: 0, height: offTopPx }}
                         aria-hidden
                       />
@@ -1154,7 +1238,7 @@ export default async function CalendarPage({
                     {/* off-hours shading (bottom) */}
                     {offBottomPx > 0 && (
                       <div
-                        className="absolute left-0 right-0 bg-zinc-50/60 pointer-events-none"
+                        className="absolute left-0 right-0 bg-zinc-100/60 pointer-events-none"
                         style={{ bottom: 0, height: offBottomPx }}
                         aria-hidden
                       />
@@ -1234,13 +1318,13 @@ export default async function CalendarPage({
                       {/* off-hours shading */}
                       {offTopPx > 0 && (
                         <div
-                          className="absolute left-0 right-0 bg-zinc-50/60 pointer-events-none"
+                          className="absolute left-0 right-0 bg-zinc-100/60 pointer-events-none"
                           style={{ top: 0, height: offTopPx }}
                         />
                       )}
                       {offBottomPx > 0 && (
                         <div
-                          className="absolute left-0 right-0 bg-zinc-50/60 pointer-events-none"
+                          className="absolute left-0 right-0 bg-zinc-100/60 pointer-events-none"
                           style={{ bottom: 0, height: offBottomPx }}
                         />
                       )}

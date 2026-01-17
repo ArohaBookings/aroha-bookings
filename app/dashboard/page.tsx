@@ -16,11 +16,15 @@ export const dynamicParams = true;
 
 import React from "react";
 import { prisma } from "@/lib/db";
+import { generateText, hasAI } from "@/lib/ai/client";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { LogoutButton } from "@/components/LogoutButton";
+import Card from "@/components/ui/Card";
+import EmptyState from "@/components/ui/EmptyState";
 import { redirect } from "next/navigation";
 import { unstable_noStore as noStore } from "next/cache";
+import { Badge } from "@/components/ui";
 
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -88,6 +92,13 @@ function fmtDateTime(d: Date): string {
 function fmtTime(d: Date): string {
   return d.toLocaleTimeString(LOCALE, { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
 }
+function fmtStatus(status?: string | null): string {
+  if (!status) return "Scheduled";
+  if (status === "NO_SHOW") return "No-show";
+  if (status === "CANCELLED") return "Cancelled";
+  if (status === "COMPLETED") return "Completed";
+  return "Scheduled";
+}
 
 /* ──────────────────────────────────────────────────────────────────────────
    Local Types
@@ -109,7 +120,7 @@ type ApptLite = {
   service: ServiceLite | null;
 };
 
-type RecentRow = { when: string; client: string; service: string; staff: string };
+type RecentRow = { when: string; client: string; service: string; staff: string; status: string };
 type UtilRow = { staff: string; pct: number };
 type TopServiceRow = { name: string; count: number; revenueCents: number };
 type SourceSlice = { label: string; count: number };
@@ -147,12 +158,12 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           </div>
           <LogoutButton />
         </header>
-        <div className="rounded-xl bg-white border border-zinc-200 shadow-sm p-6">
+        <Card>
           <p className="text-sm text-zinc-600">
             You don’t have an organisation or membership yet. Create one on the
             <a className="underline ml-1" href="/onboarding">onboarding</a> page.
           </p>
-        </div>
+        </Card>
       </div>
     );
   }
@@ -183,6 +194,16 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   let serviceThisWeek: Array<{ service: { name: string | null } | null }> = [];
   let serviceLastWeek: Array<{ service: { name: string | null } | null }> = [];
   let sourceBreakdown: SourceSlice[] = [];
+  let orgSettingsData: Record<string, unknown> = {};
+  let calendarConnected = false;
+  let inboxAvgResponseMin = 0;
+  let noShowTrend = 0;
+  let recoveredCount = 0;
+  let orgSettingsRow: { data: unknown } | null = null;
+  let calendarConnection: { id: string } | null = null;
+  let responseSamples: Array<{ receivedAt: Date | null; createdAt: Date }> = [];
+  let noShowRecent = 0;
+  let noShowPrev = 0;
 
   try {
     [
@@ -200,6 +221,12 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
       serviceThisWeek,
       serviceLastWeek,
       sourceBreakdown,
+      orgSettingsRow,
+      calendarConnection,
+      responseSamples,
+      noShowRecent,
+      noShowPrev,
+      recoveredCount,
     ] = await Promise.all([
       prisma.appointment.count({
         where: { orgId: org.id, startsAt: { gte: todayStart, lte: todayEnd } },
@@ -309,6 +336,45 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
         }
         return out;
       })(),
+      prisma.orgSettings.findUnique({
+        where: { orgId: org.id },
+        select: { data: true },
+      }),
+      prisma.calendarConnection.findFirst({
+        where: { orgId: org.id },
+        select: { id: true },
+      }),
+      prisma.emailAILog.findMany({
+        where: {
+          orgId: org.id,
+          action: { in: ["auto_sent", "sent"] },
+          receivedAt: { not: null },
+          createdAt: { gte: daysAgo(now, 30) },
+        },
+        select: { receivedAt: true, createdAt: true },
+        take: 200,
+      }),
+      prisma.appointment.count({
+        where: {
+          orgId: org.id,
+          status: "NO_SHOW",
+          startsAt: { gte: daysAgo(now, 30), lte: now },
+        },
+      }),
+      prisma.appointment.count({
+        where: {
+          orgId: org.id,
+          status: "NO_SHOW",
+          startsAt: { gte: daysAgo(now, 60), lte: daysAgo(now, 30) },
+        },
+      }),
+      prisma.emailAILog.count({
+        where: {
+          orgId: org.id,
+          action: "auto_sent",
+          createdAt: { gte: daysAgo(now, 7) },
+        },
+      }),
     ]);
   } catch (err) {
     console.error("Dashboard data error", err);
@@ -322,11 +388,11 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           <LogoutButton />
         </header>
 
-        <div className="rounded-xl bg-white border border-red-200 text-red-700 shadow-sm p-6">
+        <Card className="border-red-200 text-red-700">
           <p className="text-sm">
             Unable to load dashboard data right now. Please refresh, or try again in a moment.
           </p>
-        </div>
+        </Card>
       </div>
     );
   }
@@ -334,6 +400,53 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   /* ──────────────────────────────────────────────────────────────
      Derived metrics
   ─────────────────────────────────────────────────────────────── */
+
+  orgSettingsData = (orgSettingsRow?.data as Record<string, unknown>) || {};
+  calendarConnected = Boolean(calendarConnection);
+
+  const syncState = (orgSettingsData.emailAiSync as Record<string, unknown>) || {};
+  const lastSyncMs =
+    typeof syncState.lastSuccessAt === "number"
+      ? syncState.lastSuccessAt
+      : typeof syncState.lastSuccessAt === "string"
+      ? Date.parse(syncState.lastSuccessAt)
+      : 0;
+  const inboxSyncHealthy = lastSyncMs ? Date.now() - lastSyncMs < 60 * 60 * 1000 : false;
+
+  const responseTimes = responseSamples
+    .filter((r) => r.receivedAt && r.createdAt)
+    .map((r) => Math.max(0, minutesBetween(r.receivedAt as Date, r.createdAt)));
+  inboxAvgResponseMin = responseTimes.length
+    ? Math.round(responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length)
+    : 0;
+
+  noShowTrend = noShowPrev ? Math.round(((noShowRecent - noShowPrev) / noShowPrev) * 100) : 0;
+
+  let healthScore = 100;
+  if (!inboxSyncHealthy) healthScore -= 15;
+  if (!calendarConnected) healthScore -= 10;
+  if (inboxAvgResponseMin > 120) healthScore -= 15;
+  if (noShowTrend > 10) healthScore -= 10;
+  if (healthScore < 30) healthScore = 30;
+
+  let healthSummary = `Automation ${inboxSyncHealthy ? "healthy" : "needs attention"}, ` +
+    `${calendarConnected ? "calendar connected" : "calendar disconnected"}, ` +
+    `avg response ${inboxAvgResponseMin ? `${inboxAvgResponseMin}m` : "—"}, ` +
+    `no-show trend ${noShowTrend >= 0 ? "+" : ""}${noShowTrend}%.`;
+
+  if (hasAI()) {
+    const aiText = await generateText(
+      [
+        "Write a 1-sentence business health summary.",
+        `Inbox sync: ${inboxSyncHealthy ? "healthy" : "error/lagging"}`,
+        `Calendar: ${calendarConnected ? "connected" : "disconnected"}`,
+        `Avg response minutes: ${inboxAvgResponseMin}`,
+        `No-show trend: ${noShowTrend}%`,
+        `Recovered auto-sends last 7d: ${recoveredCount}`,
+      ].join("\n")
+    );
+    if (aiText) healthSummary = aiText;
+  }
 
   const uniqueClientsToday = uniqueTodayPhones.length;
   const uniqueClientsAllTime = uniqueAllPhones.length;
@@ -396,9 +509,10 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   // Recent list
   const recentRows: RecentRow[] = recentAppts.map((a: ApptLite): RecentRow => ({
     when: fmtDateTime(a.startsAt),
-    client: a.customerName,
-    service: a.service?.name ?? "—",
-    staff: a.staff?.name ?? "—",
+    client: a.customerName || "Client",
+    service: a.service?.name ?? "Service",
+    staff: a.staff?.name ?? "Staff",
+    status: fmtStatus(a.status),
   }));
 
   // Weekly bookings line chart
@@ -483,6 +597,44 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
     qaFindings.push("No staff — utilisation will be empty.");
   }
 
+  const pulseItems: Array<{ title: string; detail: string }> = [];
+  const weekCount = Math.max(1, weekAppts.length);
+  const noShowRate = noShowCount / weekCount;
+  if (noShowRate >= 0.05) {
+    pulseItems.push({
+      title: "No-show trend",
+      detail: `No-shows are at ${(noShowRate * 100).toFixed(1)}% this week. Consider confirmation nudges.`,
+    });
+  }
+  if (cancelledCount > 0) {
+    pulseItems.push({
+      title: "Cancellation risk",
+      detail: `${cancelledCount} cancellations this week. Offer a reschedule link to recover revenue.`,
+    });
+  }
+  if (uniqueClientsToday === 0) {
+    pulseItems.push({
+      title: "Low client flow",
+      detail: "No new clients today. Share your booking link and boost availability visibility.",
+    });
+  }
+  if (estWeekCents === 0 && weekAppts.length > 0) {
+    pulseItems.push({
+      title: "Pricing data",
+      detail: "Revenue is tracking at $0 because service prices are missing. Add prices in Services.",
+    });
+  }
+
+  const pulseSelected = pulseItems.slice(0, 3);
+  const pulseSummary =
+    hasAI() && pulseSelected.length
+      ? await generateText(
+          `Turn these business insights into a 1-2 sentence summary:\n${pulseSelected
+            .map((p) => `- ${p.title}: ${p.detail}`)
+            .join("\n")}`
+        )
+      : null;
+
   /* ──────────────────────────────────────────────────────────────
      UI
   ─────────────────────────────────────────────────────────────── */
@@ -505,9 +657,101 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
         <CardStat label="Avg booking length (wk)" value={avgDur} />
       </section>
 
+      <section className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Business Health</h2>
+          <Badge variant={healthScore >= 80 ? "success" : healthScore >= 60 ? "info" : "warning"}>
+            {healthScore}/100
+          </Badge>
+        </div>
+        <p className="mt-2 text-sm text-zinc-700">{healthSummary}</p>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm text-zinc-600">
+          <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2">
+            Inbox sync: <span className="font-medium">{inboxSyncHealthy ? "Healthy" : "Needs attention"}</span>
+          </div>
+          <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2">
+            Calendar: <span className="font-medium">{calendarConnected ? "Connected" : "Disconnected"}</span>
+          </div>
+          <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2">
+            Avg response: <span className="font-medium">{inboxAvgResponseMin ? `${inboxAvgResponseMin} min` : "—"}</span>
+          </div>
+          <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2">
+            Recovered: <span className="font-medium">{recoveredCount} auto-sends</span>
+          </div>
+        </div>
+      </section>
+
+      {pulseSelected.length > 0 && (
+        <section className="rounded-xl border border-emerald-100 bg-white p-5 shadow-sm">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Business Pulse</h2>
+            <Badge variant={pulseSummary ? "info" : "neutral"}>
+              {pulseSummary ? "AI summary" : "Deterministic insights"}
+            </Badge>
+          </div>
+          {pulseSummary ? (
+            <p className="mt-2 text-sm text-zinc-700">{pulseSummary}</p>
+          ) : null}
+          <ul className="mt-3 grid gap-2 text-sm text-zinc-600">
+            {pulseSelected.map((item) => (
+              <li key={item.title} className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2">
+                <span className="font-medium text-zinc-800">{item.title}:</span> {item.detail}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {org.niche ? (
+        <section className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-semibold">Niche insights</h2>
+          <p className="mt-1 text-sm text-zinc-600">
+            Tailored suggestions for <span className="font-medium">{String(org.niche).replace("_", " ")}</span>.
+          </p>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {org.niche === "HAIR_BEAUTY" && (
+              <>
+                <HintCard title="Pre-book prompts" body="Add a 10–15 min buffer for color services to reduce runover." />
+                <HintCard title="No-show protection" body="Enable reminders 24h + 2h before appointments." />
+              </>
+            )}
+            {org.niche === "TRADES" && (
+              <>
+                <HintCard title="Travel buffers" body="Use 15–30 min buffers between on-site jobs." />
+                <HintCard title="Lead time" body="Set a 2–4 hour lead time for same-day jobs." />
+              </>
+            )}
+            {org.niche === "DENTAL" && (
+              <>
+                <HintCard title="Chair utilization" body="Keep 10 min buffers for sterilization turnover." />
+                <HintCard title="Recall rhythm" body="Track 6–12 month follow-up flows in notes." />
+              </>
+            )}
+            {org.niche === "LAW" && (
+              <>
+                <HintCard title="Long consults" body="Use 60 min slots for initial consults." />
+                <HintCard title="Prep time" body="Set buffer before for file review and prep." />
+              </>
+            )}
+            {org.niche === "AUTO" && (
+              <>
+                <HintCard title="Drop-off windows" body="Offer early drop-offs with longer working hours." />
+                <HintCard title="Parts lead time" body="Add lead time for complex repairs." />
+              </>
+            )}
+            {org.niche === "MEDICAL" && (
+              <>
+                <HintCard title="Short slots" body="15 min slots with 5 min buffers improves flow." />
+                <HintCard title="Recall intervals" body="Use reminders for follow-up appointments." />
+              </>
+            )}
+          </div>
+        </section>
+      ) : null}
+
       {/* Trends Row */}
       <section className="grid lg:grid-cols-3 gap-6">
-        <Card title="Revenue (last 8 weeks)">
+        <SectionCard title="Revenue (last 8 weeks)">
           {sumValues(revenuePoints) > 0 ? (
             <RevenueAreaChart points={revenuePoints} height={160} />
           ) : (
@@ -516,9 +760,9 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           <div className="mt-2 text-sm text-zinc-600">
             Total: <strong>{moneyNZ(sumValues(revenuePoints))}</strong>
           </div>
-        </Card>
+        </SectionCard>
 
-        <Card title="Bookings (last 8 weeks)">
+        <SectionCard title="Bookings (last 8 weeks)">
           {sumValues(bookingPoints) > 0 ? (
             <LineChart points={bookingPoints} height={160} />
           ) : (
@@ -527,9 +771,9 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           <div className="mt-2 text-sm text-zinc-600">
             Total: <strong>{sumValues(bookingPoints)}</strong>
           </div>
-        </Card>
+        </SectionCard>
 
-        <Card title="Retention (last 90 days)">
+        <SectionCard title="Retention (last 90 days)">
           <div className="flex items-end gap-6">
             <div className="text-5xl font-semibold">{retentionPct}%</div>
             <div className="text-sm text-zinc-600">
@@ -540,12 +784,12 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
               </div>
             </div>
           </div>
-        </Card>
+        </SectionCard>
       </section>
 
       {/* Sources + Services Compare */}
       <section className="grid lg:grid-cols-3 gap-6">
-        <Card title="Booking sources (breakdown)">
+        <SectionCard title="Booking sources (breakdown)">
           {totalSources > 0 ? (
             <div className="flex items-center gap-6">
               <Pie
@@ -565,17 +809,17 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           ) : (
             <Empty text="No bookings yet to analyse." />
           )}
-        </Card>
+        </SectionCard>
 
-        <Card title="Phone source trend (last 8 weeks)">
+        <SectionCard title="Phone source trend (last 8 weeks)">
           {sumValues(sourcePhoneTrend) > 0 ? (
             <BarChart points={sourcePhoneTrend} height={160} />
           ) : (
             <Empty text="No 'phone' source data yet." />
           )}
-        </Card>
+        </SectionCard>
 
-        <Card title="Services: this week vs last week">
+        <SectionCard title="Services: this week vs last week">
           {svcCompare.length > 0 ? (
             <table className="w-full text-sm">
               <thead className="text-zinc-600 border-b border-zinc-200">
@@ -602,12 +846,12 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           ) : (
             <Empty text="No recent service activity." />
           )}
-        </Card>
+        </SectionCard>
       </section>
 
       {/* Utilisation + Health */}
       <section className="grid lg:grid-cols-2 gap-6">
-        <Card title="Staff utilisation (week)">
+        <SectionCard title="Staff utilisation (week)">
           {staffUtil.length > 0 ? (
             <div className="space-y-3">
               {staffUtil.map((s: UtilRow, i: number) => (
@@ -625,9 +869,9 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           ) : (
             <Empty text="Add staff to see utilisation." />
           )}
-        </Card>
+        </SectionCard>
 
-        <Card title="Booking health">
+        <SectionCard title="Booking health">
           <div className="grid sm:grid-cols-2 gap-4">
             <Health number={cancelledCount} label="Cancellations (all time)" />
             <Health number={noShowCount} label="No-shows (all time)" />
@@ -635,12 +879,12 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           <p className="text-xs text-zinc-500 mt-3">
             Lower these with SMS reminders and deposit rules (coming soon).
           </p>
-        </Card>
+        </SectionCard>
       </section>
 
       {/* Today + Recent */}
       <section className="grid lg:grid-cols-2 gap-6">
-        <Card title="Today’s appointments">
+        <SectionCard title="Today’s appointments">
           {todaySchedule.length > 0 ? (
             <ul className="divide-y divide-zinc-200">
               {todaySchedule.map((row: TodayRow, i: number) => (
@@ -656,9 +900,9 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           ) : (
             <Empty text="No appointments today." />
           )}
-        </Card>
+        </SectionCard>
 
-        <Card title="Recent bookings">
+        <SectionCard title="Booking activity">
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
@@ -667,6 +911,7 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
                   <th className="text-left py-2">Client</th>
                   <th className="text-left py-2">Service</th>
                   <th className="text-left py-2">Staff</th>
+                  <th className="text-left py-2">Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -677,11 +922,12 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
                       <td className="py-2">{r.client}</td>
                       <td className="py-2">{r.service}</td>
                       <td className="py-2">{r.staff}</td>
+                      <td className="py-2">{r.status}</td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td className="py-4 text-zinc-500" colSpan={4}>
+                    <td className="py-4 text-zinc-500" colSpan={5}>
                       No bookings yet.
                     </td>
                   </tr>
@@ -689,12 +935,12 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
               </tbody>
             </table>
           </div>
-        </Card>
+        </SectionCard>
       </section>
 
       {/* QA Box */}
       <section>
-        <Card title="Data checks (QA)">
+        <SectionCard title="Data checks (QA)">
           {qaFindings.length > 0 ? (
             <ul className="list-disc list-inside text-sm text-amber-700">
               {qaFindings.map((t: string, i: number) => (
@@ -704,7 +950,7 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           ) : (
             <div className="text-sm text-emerald-700">All good — no issues detected.</div>
           )}
-        </Card>
+        </SectionCard>
       </section>
     </div>
   );
@@ -714,34 +960,43 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
    Small UI helpers (no external libs)
 ────────────────────────────────────────────────────────────────────────── */
 
-function Card({ title, children }: { title: string; children: React.ReactNode }): React.ReactElement {
+function SectionCard({ title, children }: { title: string; children: React.ReactNode }): React.ReactElement {
   return (
-    <section className="rounded-xl bg-white shadow-sm border border-zinc-200 overflow-hidden">
+    <Card padded={false} className="overflow-hidden">
       <header className="px-5 py-3 border-b border-zinc-200 font-semibold">{title}</header>
       <div className="p-5">{children}</div>
-    </section>
+    </Card>
   );
 }
 
 function CardStat({ label, value }: { label: string; value: string }): React.ReactElement {
   return (
-    <div className="rounded-xl bg-white border border-zinc-200 shadow-sm p-5">
+    <Card padded={false} className="p-5">
       <div className="text-sm text-zinc-600">{label}</div>
       <div className="mt-1 text-2xl font-semibold">{value}</div>
-    </div>
+    </Card>
+  );
+}
+
+function HintCard({ title, body }: { title: string; body: string }): React.ReactElement {
+  return (
+    <Card padded={false} className="rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+      <div className="text-sm font-semibold text-zinc-900">{title}</div>
+      <div className="mt-1 text-sm text-zinc-600">{body}</div>
+    </Card>
   );
 }
 
 function Empty({ text }: { text: string }): React.ReactElement {
-  return <div className="text-sm text-zinc-500">{text}</div>;
+  return <EmptyState title={text} body="Once data is available, insights will appear here." />;
 }
 
 function Health({ number, label }: { number: number; label: string }): React.ReactElement {
   return (
-    <div className="rounded-lg border border-zinc-200 p-4">
+    <Card padded={false} className="rounded-lg border border-zinc-200 p-4">
       <div className="text-2xl font-semibold">{number}</div>
       <div className="text-sm text-zinc-600">{label}</div>
-    </div>
+    </Card>
   );
 }
 

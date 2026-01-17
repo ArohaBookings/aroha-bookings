@@ -1,83 +1,75 @@
 "use client";
 
-import React, { useState, useTransition } from "react";
+import React, { useState } from "react";
 
 type Props = {
   isGoogleConnected: boolean;
   googleAccountEmail: string | null;
+  orgId: string;
+  lastSyncAt?: string | null;
+  lastError?: string | null;
+  needsReconnect?: boolean;
 };
 
 /**
  * Tiny client-side chip that:
- * - POSTs /api/calendar/google/select with { calendarId: "primary" } for now.
- * - Shows loading state + simple status.
- * - Reloads page so CalendarPage sees updated googleCalendarId.
+ * - Starts OAuth when not connected
+ * - Opens calendar selection when connected
  */
 export function GoogleCalendarConnectChip({
   isGoogleConnected,
   googleAccountEmail,
+  orgId,
+  lastSyncAt,
+  lastError,
+  needsReconnect,
 }: Props) {
-  const [pending, startTransition] = useTransition();
   const [status, setStatus] = useState<string | null>(null);
 
   async function handleClick() {
     setStatus(null);
 
-    // For now we use "primary". Later you can replace this with a popup
-    // that lets the user choose a specific calendar id from google.
-    const calendarId = "primary";
-
-    startTransition(async () => {
-      try {
-        const res = await fetch("/api/calendar/google/select", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ calendarId }),
-        });
-
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          console.error("Google select error", data);
-          setStatus(data.error || "Failed to connect");
-          return;
-        }
-
-        setStatus("Connected");
-        window.location.reload();
-      } catch (err) {
-        console.error("Google select network error", err);
-        setStatus("Network error");
-      }
-    });
+    try {
+      window.location.href = "/calendar/connect";
+    } catch {
+      setStatus("Unable to open Google connect.");
+    }
   }
 
-  const label = isGoogleConnected ? "Google sync on" : "Connect Google";
+  const label = isGoogleConnected ? (needsReconnect ? "Reconnect Google" : "Google sync on") : "Connect Google";
+  const syncHint = lastSyncAt ? `Last sync ${new Date(lastSyncAt).toLocaleString()}` : "No sync yet";
   const title = isGoogleConnected
-    ? `Synced to Google${googleAccountEmail ? ` (${googleAccountEmail})` : ""}. Click to re-link.`
+    ? `Synced to Google${googleAccountEmail ? ` (${googleAccountEmail})` : ""}. ${syncHint}.`
     : "Connect Google Calendar to sync bookings automatically.";
 
   return (
     <button
       type="button"
       onClick={handleClick}
-      disabled={pending}
+      disabled={!orgId}
       title={title}
       className={
         (isGoogleConnected
           ? "inline-flex items-center gap-2 rounded-full border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs text-emerald-900"
           : "inline-flex items-center gap-2 rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50") +
-        (pending ? " opacity-70 cursor-wait" : "")
+        (!orgId ? " opacity-70 cursor-not-allowed" : "")
       }
     >
       <span
         className={
           "w-1.5 h-1.5 rounded-full " +
-          (isGoogleConnected ? "bg-emerald-500" : "bg-zinc-400")
+          (isGoogleConnected ? (needsReconnect ? "bg-amber-500" : "bg-emerald-500") : "bg-zinc-400")
         }
         aria-hidden
       />
-      {pending ? "Connecting..." : label}
-      {status && !pending && (
+      {label}
+      {isGoogleConnected && (
+        <span className="hidden sm:inline text-[10px] text-zinc-500 ml-1">
+          · {lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString() : "No sync yet"}
+        </span>
+      )}
+      {lastError && <span className="text-[10px] text-rose-600 ml-1">· Needs attention</span>}
+      {status && (
         <span className="text-[10px] text-zinc-500 ml-1">· {status}</span>
       )}
     </button>

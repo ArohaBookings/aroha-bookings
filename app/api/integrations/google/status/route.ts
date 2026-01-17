@@ -1,0 +1,58 @@
+import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/db";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+
+export async function GET() {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.email) {
+    return NextResponse.json({ ok: false, error: "Not authenticated" }, { status: 401 });
+  }
+
+  const membership = await prisma.membership.findFirst({
+    where: { user: { email: session.user.email } },
+    select: { orgId: true },
+    orderBy: { orgId: "asc" },
+  });
+
+  if (!membership?.orgId) {
+    return NextResponse.json({ ok: false, error: "No organization" }, { status: 400 });
+  }
+
+  const [connection, orgSettings] = await Promise.all([
+    prisma.calendarConnection.findFirst({
+      where: { orgId: membership.orgId, provider: "google" },
+      orderBy: { updatedAt: "desc" },
+      select: { accountEmail: true, expiresAt: true },
+    }),
+    prisma.orgSettings.findUnique({
+      where: { orgId: membership.orgId },
+      select: { data: true },
+    }),
+  ]);
+
+  const data = (orgSettings?.data as Record<string, unknown>) || {};
+  const calendarId = typeof data.googleCalendarId === "string" ? data.googleCalendarId : null;
+  const lastSyncAt = typeof data.calendarLastSyncAt === "string" ? data.calendarLastSyncAt : null;
+  const errors = Array.isArray(data.calendarSyncErrors) ? data.calendarSyncErrors : [];
+  const lastError = errors.length ? errors[0] : null;
+  const expiresAt = connection?.expiresAt ? connection.expiresAt.getTime() : null;
+  const needsReconnect = expiresAt ? expiresAt < Date.now() - 2 * 60 * 1000 : false;
+
+  return NextResponse.json({
+    ok: true,
+    orgId: membership.orgId,
+    connected: Boolean(connection),
+    email: connection?.accountEmail ?? null,
+    expiresAt,
+    needsReconnect,
+    calendarId,
+    lastSyncAt,
+    lastError,
+    startUrl: `/api/integrations/google/start?orgId=${encodeURIComponent(membership.orgId)}`,
+  });
+}

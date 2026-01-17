@@ -39,6 +39,10 @@ export default function LogsClient({ seed }: { seed: LogRow[] }) {
 
     const pvSubject    = $("#subj");
     const pvBody       = $("#body");
+    const confThresholdEl = document.getElementById("conf-threshold");
+    const confThreshold = confThresholdEl
+      ? Number(confThresholdEl.getAttribute("data-value") || 0.65)
+      : 0.65;
 
     const actSuggest   = $("#act-suggest") as HTMLButtonElement | null;
     const actSend      = $("#act-send")    as HTMLButtonElement | null;
@@ -111,12 +115,36 @@ export default function LogsClient({ seed }: { seed: LogRow[] }) {
       return arr.sort((a, b) => stamp(b) - stamp(a));
     };
 
+    const explainWhy = (action?: string | null, conf?: number | null) => {
+      if (action === "auto_sent" || action === "sent") {
+        return conf != null && conf >= confThreshold
+          ? "Auto-sent because confidence exceeded the threshold."
+          : "Auto-sent based on rule configuration.";
+      }
+      if (action === "queued_for_review") {
+        return conf != null && conf < confThreshold
+          ? "Queued for review because confidence was below the threshold."
+          : "Queued for review based on rules or escalation tags.";
+      }
+      if (action === "draft_created" || action === "drafted") {
+        return "Draft created for manual approval.";
+      }
+      if (action?.startsWith("skipped")) {
+        return "Skipped based on sender/rule checks.";
+      }
+      return "No explanation available.";
+    };
+
 // ---- pill colour helper
 const pillClass = (k?: string | null) => {
   const map: Record<string, string> = {
-    inquiry: "bg-emerald-100 text-emerald-800",
-    job: "bg-blue-100 text-blue-800",
-    support: "bg-sky-100 text-sky-800",
+    booking_request: "bg-emerald-100 text-emerald-800",
+    reschedule: "bg-sky-100 text-sky-800",
+    cancellation: "bg-rose-100 text-rose-800",
+    pricing: "bg-amber-100 text-amber-800",
+    complaint: "bg-rose-100 text-rose-800",
+    faq: "bg-zinc-100 text-zinc-700",
+    admin: "bg-indigo-100 text-indigo-800",
     spam: "bg-zinc-200 text-zinc-800",
     other: "bg-zinc-100 text-zinc-700",
     draft_created: "bg-indigo-100 text-indigo-800",
@@ -164,18 +192,21 @@ function renderList() {
             </div>
           </div>
         </div>
-        <div class="shrink-0 text-right space-y-1">
-          <span class="inline-flex items-center rounded px-2 py-0.5 text-2xs font-medium ${pillClass(r.classification)}">
-            ${r.classification ?? "other"}
-          </span><br/>
-          <span class="inline-flex items-center rounded px-2 py-0.5 text-2xs font-medium ${pillClass(r.action)}">
-            ${r.action ?? "queued_for_review"}
-          </span>
-          <div class="text-[11px] text-zinc-500">
-            ${typeof r.confidence === "number" ? ((r.confidence * 100) | 0) + "%" : "—"}
+          <div class="shrink-0 text-right space-y-1">
+            <span class="inline-flex items-center rounded px-2 py-0.5 text-2xs font-medium ${pillClass(r.classification)}">
+              ${r.classification ?? "other"}
+            </span><br/>
+            <span class="inline-flex items-center rounded px-2 py-0.5 text-2xs font-medium ${pillClass(r.action)}">
+              ${r.action ?? "queued_for_review"}
+            </span>
+            <div class="text-[11px] text-zinc-500">
+              ${typeof r.confidence === "number" ? ((r.confidence * 100) | 0) + "%" : "—"}
+            </div>
+            <div class="mt-1 h-1.5 w-24 rounded-full bg-zinc-100">
+              <div class="h-1.5 rounded-full bg-zinc-900" style="width:${Math.max(0, Math.min(100, (r.confidence ?? 0) * 100))}%"></div>
+            </div>
           </div>
         </div>
-      </div>
     `;
 
 li.addEventListener("click", (ev) => {
@@ -251,6 +282,10 @@ li.addEventListener("click", (ev) => {
         const suggestedSubject = j.suggested?.subject ?? (j.subject ? `Re: ${j.subject}` : "");
         const suggestedBody = (j.suggested?.body ?? j.snippet ?? "").toString();
 
+        const confidencePct =
+          typeof j.confidence === "number" ? Math.round(j.confidence * 100) : null;
+        const why = explainWhy(j.action, j.confidence);
+
         pvBody!.innerHTML = `
           <div class="space-y-4">
             ${(Array.isArray(j.thread) ? j.thread : []).map((m: any) => `
@@ -272,6 +307,16 @@ li.addEventListener("click", (ev) => {
                   <button id="btn-suggest" class="px-2 py-1 border rounded text-xs">Create suggested reply</button>
                   <button id="btn-rewrite" class="px-2 py-1 border rounded text-xs">Rewrite</button>
                 </div>
+              </div>
+            </div>
+            <div class="rounded border bg-white p-3 text-xs text-zinc-600">
+              <div class="font-medium text-zinc-700">Why this reply was sent</div>
+              <div class="mt-1">${why}</div>
+              <div class="mt-1 text-[11px] text-zinc-500">
+                Confidence: ${confidencePct != null ? confidencePct + "%" : "—"} · Threshold: ${(confThreshold * 100).toFixed(0)}%
+              </div>
+              <div class="mt-1 text-[11px] text-zinc-500">
+                Matched: ${j.classification || "other"} · Action: ${j.action || "queued_for_review"}
               </div>
             </div>
           </div>
@@ -320,6 +365,16 @@ li.addEventListener("click", (ev) => {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
+    }
+
+    async function sendFeedback(logId: string, action: string) {
+      try {
+        await fetch("/api/email-ai/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ logId, action, source: "email-ai-logs" }),
+        });
+      } catch {}
     }
 
     // ---------- wire tabs
@@ -400,6 +455,7 @@ li.addEventListener("click", (ev) => {
           const subj = (document.getElementById("draft-subj") as HTMLInputElement)?.value;
           const body = (document.getElementById("draft-body") as HTMLTextAreaElement)?.value;
           await postAction("approve", id, { subject: subj, body });
+          await sendFeedback(id, "manual_send");
           toast("Sent ✅");
         } catch (e: any) {
           toast(`Send failed: ${e?.message || "error"}`, false);
@@ -418,6 +474,7 @@ li.addEventListener("click", (ev) => {
           const subj = (document.getElementById("draft-subj") as HTMLInputElement)?.value;
           const body = (document.getElementById("draft-body") as HTMLTextAreaElement)?.value;
           await postAction("save_draft", id, { subject: subj, body });
+          await sendFeedback(id, "manual_draft");
           toast("Draft saved ✍️");
         } catch (e: any) {
           toast(`Save failed: ${e?.message || "error"}`, false);
@@ -434,6 +491,7 @@ li.addEventListener("click", (ev) => {
         actSkip.disabled = true;
         try {
           await postAction("skip", id);
+          await sendFeedback(id, "manual_skip");
           toast("Skipped");
         } catch (e: any) {
           toast(`Skip failed: ${e?.message || "error"}`, false);

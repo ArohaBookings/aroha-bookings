@@ -2,6 +2,7 @@
 "use client";
 
 import * as React from "react";
+import Button from "@/components/ui/Button";
 
 /* ───────────────────────────────────────────────────────────────
    Types
@@ -37,6 +38,26 @@ type Settings = {
   knowledgeBaseJson?: KnowledgeBase;
 };
 
+type InboxSettings = {
+  enableAutoDraft: boolean;
+  enableAutoSend: boolean;
+  autoSendAllowedCategories: string[];
+  autoSendMinConfidence: number;
+  neverAutoSendCategories: string[];
+  businessHoursOnly: boolean;
+  dailySendCap: number;
+  requireApprovalForFirstN: number;
+  automationPaused: boolean;
+};
+
+type VoiceSettings = {
+  tone: string;
+  signature: string;
+  emojiLevel: 0 | 1 | 2;
+  forbiddenPhrases: string;
+  lengthPreference: "short" | "medium" | "long";
+};
+
 type Rule = {
   id: string;
   enabled: boolean;
@@ -60,6 +81,13 @@ type Template = {
   name: string;         // display
   subject?: string;     // optional override
   body: string;         // supports {{placeholders}}
+};
+
+type Snippet = {
+  id: string;
+  title: string;
+  body: string;
+  keywords: string[];
 };
 
 /** Internal bundle type we persist into autoReplyRulesJson */
@@ -99,6 +127,33 @@ const DEFAULTS: Settings = {
   },
 };
 
+const DEFAULT_INBOX_SETTINGS: InboxSettings = {
+  enableAutoDraft: true,
+  enableAutoSend: false,
+  autoSendAllowedCategories: [
+    "booking_request",
+    "reschedule",
+    "cancellation",
+    "pricing",
+    "faq",
+    "admin",
+  ],
+  autoSendMinConfidence: 92,
+  neverAutoSendCategories: ["complaint", "spam"],
+  businessHoursOnly: true,
+  dailySendCap: 40,
+  requireApprovalForFirstN: 20,
+  automationPaused: false,
+};
+
+const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
+  tone: "friendly, concise, local",
+  signature: "",
+  emojiLevel: 0,
+  forbiddenPhrases: "",
+  lengthPreference: "medium",
+};
+
 /* Starter templates (stored back into settings.autoReplyRulesJson) */
 const STARTER_TEMPLATES: Template[] = [
   {
@@ -130,6 +185,82 @@ Thanks for your email — we’ve received it and will get back to you shortly.
 {{signature}}`,
   },
 ];
+
+const TONE_PRESETS = [
+  {
+    label: "Warm + local",
+    tone: "warm, friendly, local, concise",
+    instruction: "Keep replies short, warm, and very clear. Avoid jargon.",
+  },
+  {
+    label: "Professional",
+    tone: "professional, concise, confident",
+    instruction: "Use a professional tone with clear next steps.",
+  },
+  {
+    label: "Medical calm",
+    tone: "calm, reassuring, professional",
+    instruction: "Use calm, reassuring language. Avoid overpromising.",
+  },
+  {
+    label: "Trades direct",
+    tone: "direct, practical, no-nonsense",
+    instruction: "Be direct and practical. Ask for address and job details.",
+  },
+  {
+    label: "Legal formal",
+    tone: "formal, precise, respectful",
+    instruction: "Use formal language and request relevant documents.",
+  },
+] as const;
+
+const INBOX_PRESETS: Array<{ label: string; settings: Partial<InboxSettings> }> = [
+  {
+    label: "Conservative",
+    settings: {
+      enableAutoDraft: true,
+      enableAutoSend: false,
+      autoSendMinConfidence: 96,
+      businessHoursOnly: true,
+      dailySendCap: 20,
+      requireApprovalForFirstN: 30,
+    },
+  },
+  {
+    label: "Balanced",
+    settings: {
+      enableAutoDraft: true,
+      enableAutoSend: true,
+      autoSendMinConfidence: 92,
+      businessHoursOnly: true,
+      dailySendCap: 40,
+      requireApprovalForFirstN: 20,
+    },
+  },
+  {
+    label: "Aggressive",
+    settings: {
+      enableAutoDraft: true,
+      enableAutoSend: true,
+      autoSendMinConfidence: 88,
+      businessHoursOnly: false,
+      dailySendCap: 80,
+      requireApprovalForFirstN: 10,
+    },
+  },
+];
+
+const CATEGORY_OPTIONS = [
+  { key: "booking_request", label: "Booking request" },
+  { key: "reschedule", label: "Reschedule" },
+  { key: "cancellation", label: "Cancellation" },
+  { key: "pricing", label: "Pricing" },
+  { key: "complaint", label: "Complaint" },
+  { key: "faq", label: "FAQ" },
+  { key: "admin", label: "Admin" },
+  { key: "spam", label: "Spam" },
+  { key: "other", label: "Other" },
+] as const;
 
 /* ───────────────────────────────────────────────────────────────
    Small UI helpers
@@ -233,6 +364,20 @@ export default function EmailAISettingsPage() {
   const [error, setError] = React.useState<string | null>(null);
 
   const [s, setS] = React.useState<Settings>(DEFAULTS);
+  const [inboxSettings, setInboxSettings] = React.useState<InboxSettings>(
+    DEFAULT_INBOX_SETTINGS
+  );
+  const [savingInbox, setSavingInbox] = React.useState(false);
+  const [inboxDirty, setInboxDirty] = React.useState(false);
+  const [inboxError, setInboxError] = React.useState<string | null>(null);
+  const [voiceSettings, setVoiceSettings] = React.useState<VoiceSettings>(
+    DEFAULT_VOICE_SETTINGS
+  );
+  const [voiceDirty, setVoiceDirty] = React.useState(false);
+  const [snippets, setSnippets] = React.useState<Snippet[]>([]);
+  const [snippetsDirty, setSnippetsDirty] = React.useState(false);
+  const [savingSnippets, setSavingSnippets] = React.useState(false);
+  const [savingVoice, setSavingVoice] = React.useState(false);
 
   // server flags
   const [googleConnected, setGoogleConnected] = React.useState<boolean>(false);
@@ -271,6 +416,7 @@ export default function EmailAISettingsPage() {
     (async () => {
       setLoading(true);
       setError(null);
+      setInboxError(null);
       try {
         const res = await fetch("/api/email-ai/settings", { cache: "no-store" });
         const j = await res.json();
@@ -289,6 +435,46 @@ export default function EmailAISettingsPage() {
 
         // read googleConnected flag from API
         setGoogleConnected(Boolean(j.googleConnected));
+
+        const inboxRes = await fetch("/api/email-ai/inbox-settings", { cache: "no-store" });
+        const inboxJson = await inboxRes.json().catch(() => ({}));
+        if (inboxRes.ok && inboxJson?.settings) {
+          setInboxSettings({
+            ...DEFAULT_INBOX_SETTINGS,
+            ...(inboxJson.settings as InboxSettings),
+          });
+          setInboxDirty(false);
+        }
+
+        const voiceRes = await fetch("/api/email-ai/voice-settings", { cache: "no-store" });
+        const voiceJson = await voiceRes.json().catch(() => ({}));
+        if (voiceRes.ok && voiceJson?.settings) {
+          const taboo = Array.isArray(voiceJson.settings.tabooPhrases)
+            ? voiceJson.settings.tabooPhrases
+            : [];
+          const forbidden = Array.isArray(voiceJson.settings.forbiddenPhrases)
+            ? voiceJson.settings.forbiddenPhrases
+            : [];
+          setVoiceSettings({
+            ...DEFAULT_VOICE_SETTINGS,
+            tone: voiceJson.settings.tone || DEFAULT_VOICE_SETTINGS.tone,
+            signature: voiceJson.settings.signature || "",
+            emojiLevel:
+              voiceJson.settings.emojiLevel === 1 || voiceJson.settings.emojiLevel === 2
+                ? voiceJson.settings.emojiLevel
+                : DEFAULT_VOICE_SETTINGS.emojiLevel,
+            forbiddenPhrases: [...taboo, ...forbidden].join("\n"),
+            lengthPreference: voiceJson.settings.lengthPreference || "medium",
+          });
+          setVoiceDirty(false);
+        }
+
+        const snippetsRes = await fetch("/api/email-ai/snippets", { cache: "no-store" });
+        const snippetsJson = await snippetsRes.json().catch(() => ({}));
+        if (snippetsRes.ok && Array.isArray(snippetsJson?.snippets)) {
+          setSnippets(snippetsJson.snippets as Snippet[]);
+          setSnippetsDirty(false);
+        }
 
 
 
@@ -351,6 +537,14 @@ const rOnly: Rule[] = embeddedRaw
     setS((prev) => {
       const next = { ...prev, [key]: value };
       setDirty(true);
+      return next;
+    });
+  }
+
+  function patchInbox<K extends keyof InboxSettings>(key: K, value: InboxSettings[K]) {
+    setInboxSettings((prev) => {
+      const next = { ...prev, [key]: value };
+      setInboxDirty(true);
       return next;
     });
   }
@@ -438,6 +632,91 @@ const rOnly: Rule[] = embeddedRaw
       toast.show(e?.message || "Save failed", "error");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function onSaveInbox() {
+    setSavingInbox(true);
+    try {
+      const res = await fetch("/api/email-ai/inbox-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(inboxSettings),
+      });
+      const j = await res.json();
+      if (!res.ok || !j?.ok) {
+        throw new Error(j?.error || `Save failed (${res.status})`);
+      }
+      setInboxSettings({ ...DEFAULT_INBOX_SETTINGS, ...(j.settings as InboxSettings) });
+      setInboxDirty(false);
+      toast.show("Inbox automation settings saved.", "success");
+    } catch (e: any) {
+      setInboxError(e?.message || "Save failed");
+      toast.show(e?.message || "Save failed", "error");
+    } finally {
+      setSavingInbox(false);
+    }
+  }
+
+  async function onSaveVoice() {
+    setSavingVoice(true);
+    try {
+      const payload = {
+        tone: voiceSettings.tone,
+        signature: voiceSettings.signature,
+        emojiLevel: voiceSettings.emojiLevel,
+        forbiddenPhrases: voiceSettings.forbiddenPhrases
+          .split("\n")
+          .map((t) => t.trim())
+          .filter(Boolean),
+        lengthPreference: voiceSettings.lengthPreference,
+      };
+      const res = await fetch("/api/email-ai/voice-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = await res.json();
+      if (!res.ok || !j?.ok) throw new Error(j?.error || "Save failed");
+      setVoiceSettings({
+        ...DEFAULT_VOICE_SETTINGS,
+        tone: j.settings?.tone || DEFAULT_VOICE_SETTINGS.tone,
+        signature: j.settings?.signature || "",
+        emojiLevel:
+          j.settings?.emojiLevel === 1 || j.settings?.emojiLevel === 2
+            ? j.settings.emojiLevel
+            : DEFAULT_VOICE_SETTINGS.emojiLevel,
+        forbiddenPhrases: Array.isArray(j.settings?.forbiddenPhrases)
+          ? j.settings.forbiddenPhrases.join("\n")
+          : "",
+        lengthPreference: j.settings?.lengthPreference || "medium",
+      });
+      setVoiceDirty(false);
+      toast.show("Brand voice saved.", "success");
+    } catch (e: any) {
+      toast.show(e?.message || "Save failed", "error");
+    } finally {
+      setSavingVoice(false);
+    }
+  }
+
+  async function onSaveSnippets() {
+    setSavingSnippets(true);
+    try {
+      const res = await fetch("/api/email-ai/snippets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ snippets }),
+      });
+      const j = await res.json();
+      if (!res.ok || !j?.ok) throw new Error(j?.error || "Save failed");
+      setSnippets(Array.isArray(j.snippets) ? j.snippets : snippets);
+      setSnippetsDirty(false);
+      toast.show("Snippets saved.", "success");
+    } catch (e: any) {
+      toast.show(e?.message || "Save failed", "error");
+    } finally {
+      setSavingSnippets(false);
     }
   }
 
@@ -626,7 +905,8 @@ Include signature if set. Do not invent facts.`;
             />
             <span>Enable Email AI</span>
           </label>
-          <button
+          <Button
+            variant="secondary"
             onClick={() => {
               setS(DEFAULTS);
               setTemplates(STARTER_TEMPLATES);
@@ -635,38 +915,34 @@ Include signature if set. Do not invent facts.`;
               setDirty(true);
               toast.show("Reset to defaults. Click Save to persist.", "info");
             }}
-            className="px-3 py-1.5 text-sm rounded border border-zinc-300 hover:bg-zinc-50"
           >
             Reset
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="secondary"
             onClick={() =>
               navigator.clipboard
                 .writeText(systemPreview)
                 .then(() => toast.show("System prompt copied.", "success"))
             }
-            className="px-3 py-1.5 text-sm rounded border border-zinc-300 hover:bg-zinc-50"
           >
             Copy system prompt
-          </button>
-          <button
+          </Button>
+          <Button
+            variant={dirty ? "primary" : "secondary"}
             onClick={() => onSave("manual")}
             disabled={saving || !dirty}
-            className={cx(
-              "rounded px-3 py-1.5 text-sm",
-              dirty ? "bg-indigo-600 text-white" : "bg-zinc-200 text-zinc-700"
-            )}
             title={dirty ? "Save changes" : "No changes"}
           >
             {saving ? "Saving…" : "Save settings"}
-          </button>
+          </Button>
         </div>
       </div>
 
       {error && <Alert kind="error">{error}</Alert>}
-      {dirty && (
+      {(dirty || inboxDirty || voiceDirty || snippetsDirty) && (
         <Alert kind="warn">
-          You have unsaved changes (autosave runs after you pause typing).
+          You have unsaved changes. Email AI settings autosave; inbox automation uses the Save button.
         </Alert>
       )}
 
@@ -680,10 +956,11 @@ Include signature if set. Do not invent facts.`;
           ["testing", "Testing & Logs"],
           ["advanced", "Advanced"],
         ].map(([key, label]) => (
-          <button
+          <Button
             key={key}
+            variant="ghost"
             className={cx(
-              "px-3 py-2 text-sm -mb-px border-b-2",
+              "rounded-none px-3 py-2 text-sm -mb-px border-b-2",
               tab === key
                 ? "border-zinc-900 text-zinc-900"
                 : "border-transparent text-zinc-500 hover:text-zinc-800"
@@ -691,7 +968,7 @@ Include signature if set. Do not invent facts.`;
             onClick={() => setTab(key as any)}
           >
             {label}
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -728,6 +1005,21 @@ Include signature if set. Do not invent facts.`;
                   onChange={(e) => patch("defaultTone", e.target.value)}
                   placeholder="friendly, concise, local"
                 />
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {TONE_PRESETS.map((p) => (
+                    <button
+                      key={p.label}
+                      type="button"
+                      onClick={() => {
+                        patch("defaultTone", p.tone);
+                        patch("instructionPrompt", p.instruction);
+                      }}
+                      className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-xs text-zinc-600 hover:bg-zinc-50"
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
               </label>
               <label className="block">
                 <div className="text-sm text-zinc-600">Timezone</div>
@@ -793,6 +1085,351 @@ Include signature if set. Do not invent facts.`;
                 className="w-full"
               />
             </label>
+
+            <div className="rounded border p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">Autonomous Inbox</div>
+                  <div className="text-xs text-zinc-500">
+                    Safe-by-default controls for auto-drafts and auto-send.
+                  </div>
+                </div>
+                <Button
+                  variant={inboxDirty ? "primary" : "secondary"}
+                  onClick={onSaveInbox}
+                  disabled={savingInbox || !inboxDirty}
+                >
+                  {savingInbox ? "Saving…" : "Save inbox settings"}
+                </Button>
+              </div>
+
+              {inboxError && <div className="text-xs text-rose-600">{inboxError}</div>}
+
+              <div className="flex flex-wrap gap-2">
+                {INBOX_PRESETS.map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-xs text-zinc-600 hover:bg-zinc-50"
+                    onClick={() => {
+                      setInboxSettings((prev) => ({ ...prev, ...preset.settings }));
+                      setInboxDirty(true);
+                    }}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={inboxSettings.automationPaused}
+                    onChange={(e) => patchInbox("automationPaused", e.target.checked)}
+                  />
+                  Pause all automations
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={inboxSettings.enableAutoDraft}
+                    onChange={(e) => patchInbox("enableAutoDraft", e.target.checked)}
+                  />
+                  Enable auto-drafts
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={inboxSettings.enableAutoSend}
+                    onChange={(e) => patchInbox("enableAutoSend", e.target.checked)}
+                  />
+                  Enable auto-send (safe categories only)
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <label className="block text-sm">
+                  <div className="text-xs text-zinc-500">Min confidence (%)</div>
+                  <input
+                    type="number"
+                    min={50}
+                    max={100}
+                    value={inboxSettings.autoSendMinConfidence}
+                    onChange={(e) => patchInbox("autoSendMinConfidence", Number(e.target.value))}
+                    className="mt-1 w-full border rounded px-3 py-2"
+                  />
+                </label>
+                <label className="block text-sm">
+                  <div className="text-xs text-zinc-500">Daily send cap</div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={1000}
+                    value={inboxSettings.dailySendCap}
+                    onChange={(e) => patchInbox("dailySendCap", Number(e.target.value))}
+                    className="mt-1 w-full border rounded px-3 py-2"
+                  />
+                </label>
+                <label className="block text-sm">
+                  <div className="text-xs text-zinc-500">Require approval for first N</div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={500}
+                    value={inboxSettings.requireApprovalForFirstN}
+                    onChange={(e) => patchInbox("requireApprovalForFirstN", Number(e.target.value))}
+                    className="mt-1 w-full border rounded px-3 py-2"
+                  />
+                </label>
+              </div>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={inboxSettings.businessHoursOnly}
+                  onChange={(e) => patchInbox("businessHoursOnly", e.target.checked)}
+                />
+                Auto-send only during business hours
+              </label>
+
+              <div>
+                <div className="text-xs text-zinc-500 mb-2">Auto-send allowed categories</div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  {CATEGORY_OPTIONS.map((cat) => {
+                    const checked = inboxSettings.autoSendAllowedCategories.includes(cat.key);
+                    return (
+                      <label key={cat.key} className="flex items-center gap-2 text-xs text-zinc-600">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            const next = e.target.checked
+                              ? [...inboxSettings.autoSendAllowedCategories, cat.key]
+                              : inboxSettings.autoSendAllowedCategories.filter((c) => c !== cat.key);
+                            patchInbox("autoSendAllowedCategories", next);
+                          }}
+                        />
+                        {cat.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs text-zinc-500 mb-2">Never auto-send categories</div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  {CATEGORY_OPTIONS.map((cat) => {
+                    const checked = inboxSettings.neverAutoSendCategories.includes(cat.key);
+                    return (
+                      <label key={`never-${cat.key}`} className="flex items-center gap-2 text-xs text-zinc-600">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            const next = e.target.checked
+                              ? [...inboxSettings.neverAutoSendCategories, cat.key]
+                              : inboxSettings.neverAutoSendCategories.filter((c) => c !== cat.key);
+                            patchInbox("neverAutoSendCategories", next);
+                          }}
+                        />
+                        {cat.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded border p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">Brand voice</div>
+                  <div className="text-xs text-zinc-500">
+                    Applies to all AI-written drafts and automations.
+                  </div>
+                </div>
+                <Button
+                  variant={voiceDirty ? "primary" : "secondary"}
+                  onClick={onSaveVoice}
+                  disabled={savingVoice || !voiceDirty}
+                >
+                  {savingVoice ? "Saving…" : "Save brand voice"}
+                </Button>
+              </div>
+
+              <label className="block text-sm">
+                <div className="text-xs text-zinc-500">Tone</div>
+                <input
+                  className="mt-1 w-full border rounded px-3 py-2"
+                  value={voiceSettings.tone}
+                  onChange={(e) => {
+                    setVoiceSettings((prev) => ({ ...prev, tone: e.target.value }));
+                    setVoiceDirty(true);
+                  }}
+                />
+              </label>
+
+              <label className="block text-sm">
+                <div className="text-xs text-zinc-500">Signature block</div>
+                <textarea
+                  className="mt-1 w-full border rounded px-3 py-2 min-h-[80px]"
+                  value={voiceSettings.signature}
+                  onChange={(e) => {
+                    setVoiceSettings((prev) => ({ ...prev, signature: e.target.value }));
+                    setVoiceDirty(true);
+                  }}
+                />
+              </label>
+
+              <label className="block text-sm">
+                <div className="text-xs text-zinc-500">Forbidden phrases (one per line)</div>
+                <textarea
+                  className="mt-1 w-full border rounded px-3 py-2 min-h-[80px]"
+                  value={voiceSettings.forbiddenPhrases}
+                  onChange={(e) => {
+                    setVoiceSettings((prev) => ({ ...prev, forbiddenPhrases: e.target.value }));
+                    setVoiceDirty(true);
+                  }}
+                />
+              </label>
+
+              <label className="block text-sm">
+                <div className="text-xs text-zinc-500">Emoji level</div>
+                <select
+                  className="mt-1 w-full border rounded px-3 py-2"
+                  value={voiceSettings.emojiLevel}
+                  onChange={(e) => {
+                    setVoiceSettings((prev) => ({
+                      ...prev,
+                      emojiLevel: Number(e.target.value) as VoiceSettings["emojiLevel"],
+                    }));
+                    setVoiceDirty(true);
+                  }}
+                >
+                  <option value={0}>None</option>
+                  <option value={1}>Light</option>
+                  <option value={2}>Playful</option>
+                </select>
+              </label>
+
+              <label className="block text-sm">
+                <div className="text-xs text-zinc-500">Reply length</div>
+                <select
+                  className="mt-1 w-full border rounded px-3 py-2"
+                  value={voiceSettings.lengthPreference}
+                  onChange={(e) => {
+                    setVoiceSettings((prev) => ({
+                      ...prev,
+                      lengthPreference: e.target.value as VoiceSettings["lengthPreference"],
+                    }));
+                    setVoiceDirty(true);
+                  }}
+                >
+                  <option value="short">Short</option>
+                  <option value="medium">Medium</option>
+                  <option value="long">Long</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="rounded border p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">Smart snippets</div>
+                  <div className="text-xs text-zinc-500">
+                    Approved responses the AI can use verbatim when keywords match.
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant={snippetsDirty ? "primary" : "secondary"}
+                    onClick={onSaveSnippets}
+                    disabled={savingSnippets || !snippetsDirty}
+                  >
+                    {savingSnippets ? "Saving…" : "Save snippets"}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      setSnippets((prev) => [
+                        ...prev,
+                        {
+                          id: `snippet_${Math.random().toString(36).slice(2, 8)}`,
+                          title: "New snippet",
+                          body: "",
+                          keywords: [],
+                        },
+                      ]);
+                      setSnippetsDirty(true);
+                    }}
+                  >
+                    Add snippet
+                  </Button>
+                </div>
+              </div>
+
+              {snippets.length === 0 ? (
+                <div className="text-xs text-zinc-500">No snippets yet.</div>
+              ) : (
+                <div className="space-y-3">
+                  {snippets.map((snippet, idx) => (
+                    <div key={snippet.id} className="rounded-lg border border-zinc-200 p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-semibold text-zinc-600">Snippet {idx + 1}</div>
+                        <button
+                          className="text-xs text-rose-600"
+                          onClick={() => {
+                            setSnippets((prev) => prev.filter((s) => s.id !== snippet.id));
+                            setSnippetsDirty(true);
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <input
+                        className="w-full rounded border px-3 py-2 text-sm"
+                        value={snippet.title}
+                        onChange={(e) => {
+                          const next = [...snippets];
+                          next[idx] = { ...snippet, title: e.target.value };
+                          setSnippets(next);
+                          setSnippetsDirty(true);
+                        }}
+                        placeholder="Snippet title"
+                      />
+                      <input
+                        className="w-full rounded border px-3 py-2 text-sm"
+                        value={snippet.keywords.join(", ")}
+                        onChange={(e) => {
+                          const keywords = e.target.value
+                            .split(",")
+                            .map((k) => k.trim())
+                            .filter(Boolean);
+                          const next = [...snippets];
+                          next[idx] = { ...snippet, keywords };
+                          setSnippets(next);
+                          setSnippetsDirty(true);
+                        }}
+                        placeholder="Keywords (comma-separated)"
+                      />
+                      <textarea
+                        className="w-full rounded border px-3 py-2 text-sm min-h-[80px]"
+                        value={snippet.body}
+                        onChange={(e) => {
+                          const next = [...snippets];
+                          next[idx] = { ...snippet, body: e.target.value };
+                          setSnippets(next);
+                          setSnippetsDirty(true);
+                        }}
+                        placeholder="Snippet content"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {/* Privacy toggles */}
             <div className="rounded border p-3 space-y-2">

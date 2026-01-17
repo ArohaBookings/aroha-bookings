@@ -95,12 +95,22 @@ enum Plan {
   PREMIUM
 }
 
+enum Niche {
+  HAIR_BEAUTY
+  TRADES
+  DENTAL
+  LAW
+  AUTO
+  MEDICAL
+}
+
 model Organization {
   id              String   @id @default(cuid())
   name            String
   slug            String   @unique
   timezone        String   @default("Pacific/Auckland")
   plan            Plan     @default(PROFESSIONAL)
+  niche           Niche?
   address         String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -121,8 +131,10 @@ model Organization {
   checkoutTokens      CheckoutToken[]
   apiKeys             ApiKey[]
   calendarConnections CalendarConnection[]
+  retellConnections   RetellConnection[]
   emailAISettings     EmailAISettings?
   emailAILogs         EmailAILog[]
+  callLogs            CallLog[]
 
   @@index([name])
   @@index([slug])
@@ -238,6 +250,14 @@ enum AppointmentStatus {
   NO_SHOW
 }
 
+enum CallOutcome {
+  COMPLETED
+  NO_ANSWER
+  BUSY
+  FAILED
+  CANCELLED
+}
+
 model Customer {
   id        String   @id @default(cuid())
   orgId     String
@@ -277,8 +297,13 @@ model Appointment {
   status        AppointmentStatus @default(SCHEDULED)
   cancelledAt   DateTime?
   cancelledBy   String?
+  externalCalendarEventId String?
+  externalCalendarId      String?
+  externalProvider        String?
+  syncedAt                DateTime?
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
+  callLogs      CallLog[]
 
   @@index([orgId, staffId, startsAt, endsAt])
   @@index([customerPhone])
@@ -375,6 +400,44 @@ model CalendarConnection {
 
   @@unique([orgId, provider, accountEmail])
   @@index([orgId, provider])
+}
+
+model RetellConnection {
+  id              String   @id @default(cuid())
+  orgId           String
+  agentId         String
+  apiKeyEncrypted String
+  webhookSecret   String
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, agentId])
+  @@index([orgId, active])
+}
+
+model CallLog {
+  id            String      @id @default(cuid())
+  orgId         String
+  agentId       String
+  callId        String      @unique
+  startedAt     DateTime
+  endedAt       DateTime?
+  callerPhone   String
+  transcript    String?
+  recordingUrl  String?
+  outcome       CallOutcome
+  appointmentId String?
+  rawJson       Json
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, agentId, startedAt])
+  @@index([orgId, outcome])
+  @@index([appointmentId])
 }
 
 /**

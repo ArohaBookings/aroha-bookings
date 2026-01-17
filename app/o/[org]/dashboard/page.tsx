@@ -6,6 +6,7 @@ export const dynamicParams = true;
 
 import { prisma } from "@/lib/db";
 import { auth } from "@/lib/auth";
+import Card from "@/components/ui/Card";
 import { redirect, notFound } from "next/navigation";
 
 
@@ -139,11 +140,11 @@ const staffUtil: { staff: string; pct: number }[] = staffList
         <Stat label="Avg booking length (wk)" value={avgDur} />
       </div>
 
-      <Card title="Estimated revenue (this week)">
+      <SectionCard title="Estimated revenue (this week)">
         <div className="text-3xl font-semibold">{moneyNZ(estWeekCents)}</div>
-      </Card>
+      </SectionCard>
 
-      <Card title="Top services">
+      <SectionCard title="Top services">
         <ul className="divide-y divide-zinc-200">
           {topServices.map((row,i)=>(
             <li key={i} className="px-5 py-3 flex items-center justify-between">
@@ -153,9 +154,9 @@ const staffUtil: { staff: string; pct: number }[] = staffList
           ))}
           {topServices.length===0 && <li className="px-5 py-6 text-zinc-500">No data yet.</li>}
         </ul>
-      </Card>
+      </SectionCard>
 
-      <Card title="Today’s appointments">
+      <SectionCard title="Today’s appointments">
         <ul className="divide-y divide-zinc-200">
           {todaySchedule.map(row=>(
             <li key={row.id} className="px-5 py-3 flex items-center justify-between">
@@ -168,9 +169,9 @@ const staffUtil: { staff: string; pct: number }[] = staffList
           ))}
           {todaySchedule.length===0 && <li className="px-5 py-6 text-zinc-500">No appointments today.</li>}
         </ul>
-      </Card>
+      </SectionCard>
 
-      <Card title="Staff utilisation (week)">
+      <SectionCard title="Staff utilisation (week)">
         <div className="p-5 space-y-3">
           {staffUtil.map((s: { staff: string; pct: number }, i: number) => (
             <div key={i}>
@@ -185,25 +186,25 @@ const staffUtil: { staff: string; pct: number }[] = staffList
           ))}
           {staffUtil.length===0 && <div className="text-sm text-zinc-500">Add staff to see utilisation.</div>}
         </div>
-      </Card>
+      </SectionCard>
     </div>
   );
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-xl bg-white shadow-card border border-zinc-200 overflow-hidden">
+    <Card padded={false} className="overflow-hidden">
       <header className="px-5 py-3 border-b border-zinc-200 font-semibold">{title}</header>
       <div className="p-5">{children}</div>
-    </section>
+    </Card>
   );
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl bg-white shadow-card border border-zinc-200 p-5">
+    <Card padded={false} className="p-5">
       <div className="text-sm text-zinc-600">{label}</div>
       <div className="text-2xl font-semibold">{value}</div>
-    </div>
+    </Card>
   );
 }

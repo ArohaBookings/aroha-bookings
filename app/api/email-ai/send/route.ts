@@ -6,6 +6,8 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { google } from "googleapis";
 import { getToken } from "next-auth/jwt";
+import { getOrgEntitlements } from "@/lib/entitlements";
+import { resolveEmailIdentity } from "@/lib/emailIdentity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,11 +44,13 @@ function buildReplyRaw(opts: {
   references?: string;
   body: string;
   from?: string;
+  replyTo?: string;
   labelTag?: string;
 }) {
   const lines = [
     `To: ${opts.to}`,
     ...(opts.from ? [`From: ${opts.from}`] : []),
+    ...(opts.replyTo ? [`Reply-To: ${opts.replyTo}`] : []),
     `Subject: ${opts.subject}`,
     ...(opts.inReplyTo ? [`In-Reply-To: ${opts.inReplyTo}`] : []),
     ...(opts.references ? [`References: ${opts.references}`] : []),
@@ -182,6 +186,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Email AI disabled" }, { status: 400 });
     }
 
+    const entitlements = await getOrgEntitlements(log.orgId);
+    if (!entitlements.features.emailAi) {
+      return NextResponse.json({ ok: false, error: "Email AI disabled for this org" }, { status: 403 });
+    }
+
     /* ──────────────────────────────────────────────
        GMAIL AUTH (robust: JWT refresh if needed)
     ─────────────────────────────────────────────── */
@@ -280,12 +289,23 @@ if (!body) {
       }
     }
 
+    const identity = await resolveEmailIdentity(log.orgId, "");
+    let senderEmail: string | null = null;
+    try {
+      const profile = await gmail.users.getProfile({ userId: "me" });
+      senderEmail = profile.data.emailAddress ?? null;
+    } catch {
+      senderEmail = null;
+    }
+
     const raw = buildReplyRaw({
       to: toHeader,
       subject,
       inReplyTo,
       references,
       body,
+      from: senderEmail ? `${identity.fromName} <${senderEmail}>` : undefined,
+      replyTo: identity.replyTo,
       labelTag: `Aroha-${log.orgId}`,
     });
 

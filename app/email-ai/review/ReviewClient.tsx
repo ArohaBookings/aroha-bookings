@@ -85,6 +85,16 @@ export default function ReviewClient() {
       return j || { ok: true };
     };
 
+    const sendFeedback = async (logId: string, action: string) => {
+      try {
+        await fetch("/api/email-ai/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ logId, action, source: "email-ai-review" }),
+        });
+      } catch {}
+    };
+
     const removeRow = (row: HTMLElement | null) => {
       if (!row) return;
       row.style.opacity = '0.5';
@@ -188,6 +198,7 @@ export default function ReviewClient() {
           const id = r.getAttribute('data-id') || '';
           if (!id) continue;
           await postJSON(API, { op: 'approve', id });
+          await sendFeedback(id, "approve_suggested");
           removeRow(r);
         }
       } catch (e: any) {
@@ -209,6 +220,7 @@ export default function ReviewClient() {
           const id = r.getAttribute('data-id') || '';
           if (!id) continue;
           await postJSON(API, { op: 'skip', id });
+          await sendFeedback(id, "skip");
           removeRow(r);
         }
       } catch (e: any) {
@@ -280,6 +292,8 @@ try {
   // APPROVE / SKIP: remove on explicit success only
   if (payload.op !== 'save_draft') {
     if (res?.ok === true) removeRow(row);   // only when server says ok
+    if (res?.ok === true && payload.op === 'approve') await sendFeedback(id, "approve_suggested");
+    if (res?.ok === true && payload.op === 'skip') await sendFeedback(id, "skip");
     return;
   }
 

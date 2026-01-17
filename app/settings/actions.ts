@@ -19,6 +19,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
+import { resolvePlanConfig } from "@/lib/plan";
 
 /* ───────────────────────────────────────────────────────────────
    Public types (mirror client)
@@ -58,6 +59,7 @@ export type SettingsPayload = {
     address?: string;
     phone?: string;
     email?: string;
+    niche?: string;
   };
   openingHours: OpeningHoursRow[];
 
@@ -69,6 +71,9 @@ export type SettingsPayload = {
   notifications: unknown;
   onlineBooking: unknown;
   calendarPrefs: unknown;
+  billing?: {
+    managePlanUrl?: string;
+  };
 };
 
 export type SaveResponse =
@@ -177,6 +182,7 @@ const RosterCellZ = z
   );
 
 const RosterZ = z.record(z.array(RosterCellZ.optional()).length(7));
+const NicheZ = z.enum(["HAIR_BEAUTY", "TRADES", "DENTAL", "LAW", "AUTO", "MEDICAL"]);
 
 const SettingsPayloadZ = z.object({
   business: z.object({
@@ -185,6 +191,7 @@ const SettingsPayloadZ = z.object({
     address: z.string().optional(),
     phone: z.string().optional(),
     email: z.string().optional(),
+    niche: NicheZ.optional(),
   }),
   openingHours: z.array(OpeningHoursRowZ).min(1).max(7),
   services: z.array(ServiceInZ).optional(),
@@ -194,6 +201,11 @@ const SettingsPayloadZ = z.object({
   notifications: z.unknown(),
   onlineBooking: z.unknown(),
   calendarPrefs: z.unknown(),
+  billing: z
+    .object({
+      managePlanUrl: z.string().optional(),
+    })
+    .optional(),
 });
 
 /* ───────────────────────────────────────────────────────────────
@@ -260,6 +272,11 @@ function hhmmLE(a: string, b: string) {
 
 export async function loadAllSettings(): Promise<{
   business: SettingsPayload["business"];
+  orgSlug: string;
+  plan: string;
+  planLimits: { bookingsPerMonth: number | null; staffCount: number | null; automations: number | null };
+  planFeatures: Record<string, boolean>;
+  billing: { managePlanUrl?: string };
   openingHours: OpeningHoursRow[];
   services: (ServiceIn & { id: string })[];
   staff: (StaffIn & { id: string })[];
@@ -271,10 +288,18 @@ export async function loadAllSettings(): Promise<{
 }> {
   const org = await requireOrg();
 
-  const [orgRow, openingRows, services, staff, schedules, links] = await Promise.all([
+  const [orgRow, openingRows, services, staff, schedules, links, orgSettings] = await Promise.all([
     prisma.organization.findUnique({
       where: { id: org.id },
-      select: { name: true, timezone: true, address: true, dashboardConfig: true },
+      select: {
+        name: true,
+        timezone: true,
+        address: true,
+        dashboardConfig: true,
+        niche: true,
+        slug: true,
+        plan: true,
+      },
     }),
     prisma.openingHours.findMany({ where: { orgId: org.id }, orderBy: { weekday: "asc" } }),
     prisma.service.findMany({ where: { orgId: org.id }, orderBy: { name: "asc" } }),
@@ -284,6 +309,7 @@ export async function loadAllSettings(): Promise<{
       orderBy: [{ staffId: "asc" }, { dayOfWeek: "asc" }],
     }),
     prisma.staffService.findMany({ where: { staff: { orgId: org.id } } }),
+    prisma.orgSettings.findUnique({ where: { orgId: org.id }, select: { data: true } }),
   ]);
 
   const opening = ensureSevenDays(
@@ -311,6 +337,10 @@ export async function loadAllSettings(): Promise<{
   for (const s of staff as StaffDB[]) svcByStaff.set(s.id, []);
   for (const l of links as StaffSvcDB[]) svcByStaff.get(l.staffId)!.push(l.serviceId);
 
+  const settingsData = (orgSettings?.data as Record<string, unknown>) || {};
+  const planConfig = resolvePlanConfig(orgRow?.plan ?? null, settingsData);
+  const billing = (settingsData.billing as Record<string, unknown>) || {};
+
   return {
     business: {
       name: orgRow?.name ?? "",
@@ -318,6 +348,17 @@ export async function loadAllSettings(): Promise<{
       address: orgRow?.address ?? "",
       phone: (orgRow?.dashboardConfig as any)?.contact?.phone ?? "",
       email: (orgRow?.dashboardConfig as any)?.contact?.email ?? "",
+      niche: orgRow?.niche ?? undefined,
+    },
+    orgSlug: orgRow?.slug ?? "",
+    plan: planConfig.plan,
+    planLimits: planConfig.limits,
+    planFeatures: planConfig.features,
+    billing: {
+      managePlanUrl:
+        typeof billing.managePlanUrl === "string" && billing.managePlanUrl.trim()
+          ? billing.managePlanUrl.trim()
+          : undefined,
     },
     openingHours: opening,
     services: (services as ServiceDB[]).map((s) => ({
@@ -397,6 +438,7 @@ export async function saveAllSettings(payload: SettingsPayload): Promise<SaveRes
           existingStaff,
           existingSchedules,
           existingLinks,
+          orgSettingsRow,
         ] = await Promise.all([
           tx.organization.findUnique({
             where: { id: org.id },
@@ -407,6 +449,7 @@ export async function saveAllSettings(payload: SettingsPayload): Promise<SaveRes
           tx.staffMember.findMany({ where: { orgId: org.id } }),
           tx.staffSchedule.findMany({ where: { staff: { orgId: org.id } } }),
           tx.staffService.findMany({ where: { staff: { orgId: org.id } } }),
+          tx.orgSettings.findUnique({ where: { orgId: org.id }, select: { data: true } }),
         ]);
 
         /* 1) Organization basics + JSON config */
@@ -425,9 +468,29 @@ export async function saveAllSettings(payload: SettingsPayload): Promise<SaveRes
             name: p.business.name,
             timezone: p.business.timezone,
             address: p.business.address ?? null,
+            niche: p.business.niche ? (p.business.niche as any) : null,
             dashboardConfig: mergedConfig,
           },
         });
+
+        if (p.billing) {
+          const current = (orgSettingsRow?.data as Record<string, unknown>) || {};
+          const next = {
+            ...current,
+            billing: {
+              ...(current.billing as Record<string, unknown>),
+              managePlanUrl:
+                typeof p.billing.managePlanUrl === "string" && p.billing.managePlanUrl.trim()
+                  ? p.billing.managePlanUrl.trim()
+                  : undefined,
+            },
+          };
+          await tx.orgSettings.upsert({
+            where: { orgId: org.id },
+            create: { orgId: org.id, data: next },
+            update: { data: next },
+          });
+        }
 
         /* 2) Opening hours (upsert 7 rows) */
         const byDay = new Map<number, OpeningRowDB>(

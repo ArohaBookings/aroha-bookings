@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Button from "@/components/ui/Button";
 
 type Props = {
   id: string;
@@ -18,6 +19,9 @@ export default function EditClient({ id, initialSubject, initialBody }: Props) {
   const [busy, setBusy] = useState<"send" | "draft" | null>(null);
   const [msg, setMsg] = useState<string>("");
   const [msgKind, setMsgKind] = useState<"ok" | "err" | "">("");
+  const [currentBody, setCurrentBody] = useState(initialBody);
+  const [teach, setTeach] = useState(true);
+  const [teachNote, setTeachNote] = useState("");
 
   const API = "/api/email-ai/action";
   const LS_KEY = `edit:${id}`;
@@ -34,6 +38,7 @@ export default function EditClient({ id, initialSubject, initialBody }: Props) {
         if (bodyRef.current && typeof body === "string") {
           bodyRef.current.value = body;
           autoResize(bodyRef.current);
+          setCurrentBody(body);
         }
         return;
       }
@@ -123,6 +128,19 @@ export default function EditClient({ id, initialSubject, initialBody }: Props) {
         setMsgKind("ok");
       }
 
+      if (teach) {
+        fetch("/api/email-ai/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            logId: id,
+            action: op === "approve" ? "manual_send" : "manual_draft",
+            note: teachNote,
+            source: "email-ai-edit",
+          }),
+        }).catch(() => {});
+      }
+
       // clear autosave on success
       try {
         localStorage.removeItem(LS_KEY);
@@ -133,8 +151,25 @@ export default function EditClient({ id, initialSubject, initialBody }: Props) {
       setMsg(e?.message || "Failed.");
       setMsgKind("err");
     } finally {
-      setBusy(null);
+    setBusy(null);
+  }
+
+  function diffLines(a: string, b: string) {
+    const aLines = a.split("\n");
+    const bLines = b.split("\n");
+    const max = Math.max(aLines.length, bLines.length);
+    const rows = [];
+    for (let i = 0; i < max; i++) {
+      rows.push({
+        a: aLines[i] ?? "",
+        b: bLines[i] ?? "",
+        changed: (aLines[i] ?? "") !== (bLines[i] ?? ""),
+      });
     }
+    return rows;
+  }
+
+  const diff = diffLines(initialBody, currentBody);
   }
 
   return (
@@ -150,7 +185,9 @@ export default function EditClient({ id, initialSubject, initialBody }: Props) {
         <input
           ref={subjectRef}
           defaultValue={initialSubject}
-          onInput={persist}
+          onInput={(e) => {
+            persist();
+          }}
           className="mt-1 w-full rounded border px-3 py-2"
           placeholder="Subject"
         />
@@ -164,6 +201,7 @@ export default function EditClient({ id, initialSubject, initialBody }: Props) {
           onInput={(e) => {
             autoResize(e.currentTarget);
             persist();
+            setCurrentBody(e.currentTarget.value);
           }}
           rows={12}
           className="mt-1 w-full rounded border px-3 py-2 font-mono"
@@ -175,26 +213,79 @@ export default function EditClient({ id, initialSubject, initialBody }: Props) {
       </label>
 
       <div className="flex items-center gap-3">
-        <button
+        <Button
           type="submit"
           disabled={busy !== null}
-          className="rounded bg-black text-white px-4 py-2 disabled:opacity-60"
         >
           {busy === "send" ? "Sending…" : "Send"}
-        </button>
+        </Button>
 
-        <button
+        <Button
           type="button"
+          variant="secondary"
           onClick={() => void call("save_draft")}
           disabled={busy !== null}
-          className="rounded border px-4 py-2 disabled:opacity-60"
         >
           {busy === "draft" ? "Saving draft…" : "Save draft in Gmail"}
-        </button>
+        </Button>
 
         <a href="/email-ai/review" className="ml-auto text-sm underline">
           Back
         </a>
+      </div>
+
+      <div className="rounded border bg-zinc-50 p-3 text-sm">
+        <div className="flex items-center justify-between">
+          <span className="font-medium">Draft diff</span>
+          <span className="text-xs text-zinc-500">Original vs edited</span>
+        </div>
+        <div className="mt-3 grid md:grid-cols-2 gap-3 text-xs">
+          <div>
+            <div className="text-[11px] text-zinc-500">Original</div>
+            <div className="mt-1 rounded border bg-white p-2 space-y-1">
+              {diff.map((row, idx) => (
+                <div
+                  key={`o-${idx}`}
+                  className={row.changed ? "bg-rose-50 text-rose-800 px-1 rounded" : ""}
+                >
+                  {row.a || " "}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] text-zinc-500">Edited</div>
+            <div className="mt-1 rounded border bg-white p-2 space-y-1">
+              {diff.map((row, idx) => (
+                <div
+                  key={`n-${idx}`}
+                  className={row.changed ? "bg-emerald-50 text-emerald-800 px-1 rounded" : ""}
+                >
+                  {row.b || " "}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded border bg-white p-3 text-sm">
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={teach}
+            onChange={(e) => setTeach(e.target.checked)}
+          />
+          <span>Use this edit to teach Email AI</span>
+        </label>
+        {teach ? (
+          <input
+            value={teachNote}
+            onChange={(e) => setTeachNote(e.target.value)}
+            className="mt-2 w-full rounded border px-3 py-2 text-xs"
+            placeholder="Optional note (e.g. preferred tone or response style)"
+          />
+        ) : null}
       </div>
 
       {msg && (

@@ -119,6 +119,8 @@ export async function POST(req: Request) {
     let defaultTone = "friendly, concise, local";
     let instructionPrompt = "";
     let signature: string | null = null;
+    let voiceHints = "";
+    let snippetsBlock = "";
     let enabled = true; // internal calls assume enabled — they are initiated by your backend
 
     if (authState.kind === "session") {
@@ -146,6 +148,38 @@ export async function POST(req: Request) {
       defaultTone = s.defaultTone || defaultTone;
       instructionPrompt = s.instructionPrompt || "";
       signature = (s.signature || "").trim() || null;
+
+      const orgSettings = await prisma.orgSettings.findUnique({
+        where: { orgId },
+        select: { data: true },
+      });
+      const data = (orgSettings?.data as Record<string, unknown>) || {};
+      const voice = (data.aiVoice as Record<string, unknown>) || {};
+      const taboo = Array.isArray(voice.tabooPhrases) ? voice.tabooPhrases : [];
+      const forbidden = Array.isArray(voice.forbiddenPhrases) ? voice.forbiddenPhrases : [];
+      const lengthPref = voice.lengthPreference || voice.length || "";
+      voiceHints = [
+        taboo.length || forbidden.length
+          ? `Forbidden phrases: ${[...taboo, ...forbidden].filter(Boolean).join(", ")}`
+          : "",
+        typeof voice.emojiLevel === "number" ? `Emoji level (0-2): ${voice.emojiLevel}` : "",
+        lengthPref ? `Preferred reply length: ${lengthPref}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      const snippets = Array.isArray(data.emailSnippets) ? data.emailSnippets : [];
+      const snippetLines = snippets
+        .map((row: any) => {
+          const title = String(row?.title || row?.name || "").trim();
+          const bodyText = String(row?.body || row?.content || "").trim();
+          if (!title || !bodyText) return null;
+          return `- ${title}: ${bodyText}`;
+        })
+        .filter(Boolean);
+      if (snippetLines.length) {
+        snippetsBlock = `Approved snippets (use verbatim if relevant):\n${snippetLines.join("\n")}`;
+      }
     }
 
     /* ──────────────────────────────────────────────
@@ -160,6 +194,8 @@ export async function POST(req: Request) {
 You are an AI email assistant for ${businessName}.
 Tone: ${tone}.
 ${instructionPrompt ? `Owner's instructions:\n${instructionPrompt}` : ""}
+${voiceHints ? `Voice rules:\n${voiceHints}` : ""}
+${snippetsBlock}
 
 Rules:
 - Use NZ English spelling.

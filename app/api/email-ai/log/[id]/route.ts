@@ -150,6 +150,7 @@ export async function GET(
     const suggested = cloneSmall(rawMeta?.suggested) || undefined;
     const lastDraftPreview = cloneSmall(rawMeta?.lastDraftPreview) || undefined;
     const draftId = s(rawMeta?.draftId, "") || undefined;
+    const ai = cloneSmall(rawMeta?.ai) || undefined;
 
     // Provide a Gmail draft edit link if we have a draftId
     const editUrl = draftId
@@ -182,6 +183,7 @@ export async function GET(
         from: s(rawMeta?.from, "") || undefined,
         replyTo: s(rawMeta?.replyTo, "") || undefined,
       },
+      ai,
     };
 
     // 5) Try to fetch a light Gmail thread preview (soft-fail)

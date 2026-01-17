@@ -36,6 +36,7 @@ import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { createOrUpdateAppointmentEvent, deleteAppointmentEvent } from "@/lib/integrations/google/syncAppointment";
 
 /* ═══════════════════════════════════════════════════════════════
    Types, constants, and tiny utils
@@ -504,7 +505,7 @@ export async function createBooking(formData: FormData): Promise<ActionResult> {
     // Customer linkage
     const customerId = await ensureCustomer(org.id, customerName, customerPhone);
 
-    await prisma.appointment.create({
+    const created = await prisma.appointment.create({
       data: {
         orgId: org.id,
         staffId,
@@ -519,6 +520,10 @@ export async function createBooking(formData: FormData): Promise<ActionResult> {
         ...(notes ? { notes } : {}),
       },
     });
+
+    createOrUpdateAppointmentEvent(org.id, created.id).catch((err) =>
+      console.error("google-sync(create) error:", err)
+    );
 
     return { ok: true };
   } catch (err: any) {
@@ -587,7 +592,7 @@ export async function updateBooking(formData: FormData): Promise<ActionResult> {
 
     const customerId = await ensureCustomer(org.id, customerName, customerPhone);
 
-    await prisma.appointment.update({
+    const updated = await prisma.appointment.update({
       where: { id },
       data: {
         startsAt: snappedStart,
@@ -600,6 +605,10 @@ export async function updateBooking(formData: FormData): Promise<ActionResult> {
         ...(notes ? { notes } : { notes: null }),
       },
     });
+
+    createOrUpdateAppointmentEvent(org.id, updated.id).catch((err) =>
+      console.error("google-sync(update) error:", err)
+    );
 
     return { ok: true };
   } catch (err: any) {
@@ -621,7 +630,7 @@ export async function cancelBooking(formData: FormData): Promise<ActionResult> {
 
     const actor = await currentActorEmail();
 
-    await prisma.appointment.update({
+    const updated = await prisma.appointment.update({
       where: { id },
       data: {
         status: "CANCELLED",
@@ -630,10 +639,57 @@ export async function cancelBooking(formData: FormData): Promise<ActionResult> {
       },
     });
 
+    deleteAppointmentEvent(org.id, updated.id).catch((err) =>
+      console.error("google-sync(cancel) error:", err)
+    );
+
     return { ok: true };
   } catch (err: any) {
     console.error("Cancel booking failed:", err);
     return fail(err?.message ?? "Cancel failed.");
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   UNDO CANCEL (within window)
+   ═══════════════════════════════════════════════════════════════ */
+
+export async function undoCancelBooking(id: string, windowMinutes = 10): Promise<ActionResult> {
+  const org = await requireOrg();
+  try {
+    if (!id) return fail("Missing booking id.");
+    await requireAppointmentOwned(org.id, id);
+
+    const appt = await prisma.appointment.findUnique({
+      where: { id },
+      select: { id: true, status: true, cancelledAt: true },
+    });
+    if (!appt) return fail("Booking not found.");
+    if (appt.status !== "CANCELLED" || !appt.cancelledAt) {
+      return fail("Booking is not cancelled.");
+    }
+    const ageMin = (Date.now() - appt.cancelledAt.getTime()) / 60000;
+    if (ageMin > windowMinutes) {
+      return fail("Undo window expired.");
+    }
+
+    await prisma.appointment.update({
+      where: { id },
+      data: {
+        status: "SCHEDULED",
+        cancelledAt: null,
+        cancelledBy: null,
+      },
+    });
+
+    createOrUpdateAppointmentEvent(org.id, id).catch((err) =>
+      console.error("google-sync(undo-cancel) error:", err)
+    );
+
+    return { ok: true };
+  } catch (err: any) {
+    console.error("Undo cancel failed:", err);
+    return fail(err?.message ?? "Undo failed.");
   }
 }
 
@@ -668,6 +724,8 @@ export async function deleteBooking(id: string): Promise<ActionResult> {
   try {
     if (!id) return fail("Missing booking id.");
     await requireAppointmentOwned(org.id, id);
+
+    await deleteAppointmentEvent(org.id, id);
 
     await prisma.appointment.delete({
       where: { id },
@@ -724,7 +782,7 @@ export async function duplicateBooking(id: string, daysOffset = 7): Promise<Acti
       return fail("Duplicate overlaps another booking for the same staff.");
     }
 
-    await prisma.appointment.create({
+    const created = await prisma.appointment.create({
       data: {
         orgId: src.orgId,
         staffId: src.staffId ?? null,
@@ -739,6 +797,10 @@ export async function duplicateBooking(id: string, daysOffset = 7): Promise<Acti
         notes: src.notes ?? null,
       },
     });
+
+    createOrUpdateAppointmentEvent(org.id, created.id).catch((err) =>
+      console.error("google-sync(duplicate) error:", err)
+    );
 
     return { ok: true };
   } catch (err: any) {
@@ -803,7 +865,7 @@ export async function rescheduleBooking(
       return fail("Reschedule overlaps another booking for the same staff.");
     }
 
-    await prisma.appointment.update({
+    const updated = await prisma.appointment.update({
       where: { id },
       data: {
         startsAt: newStarts,
@@ -812,6 +874,10 @@ export async function rescheduleBooking(
         serviceId: (patch.serviceId ?? existing.serviceId) || null,
       },
     });
+
+    createOrUpdateAppointmentEvent(org.id, updated.id).catch((err) =>
+      console.error("google-sync(reschedule) error:", err)
+    );
 
     return { ok: true };
   } catch (err: any) {

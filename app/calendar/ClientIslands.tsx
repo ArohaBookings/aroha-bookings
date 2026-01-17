@@ -16,7 +16,8 @@
  */
 
 import * as React from "react";
-import { createBooking, updateBooking, cancelBooking } from "./actions";
+import { createBooking, updateBooking, cancelBooking, undoCancelBooking } from "./actions";
+import { Badge, Button, Card } from "@/components/ui";
 
 
 /* ───────────────────────── Types (mirror server) ───────────────────────── */
@@ -38,6 +39,13 @@ export type Block = {
   serviceId: string | null;
   _customerPhone?: string;
   _customerName?: string;
+  _customerId?: string | null;
+  _syncProvider?: string | null;
+  _syncCalendarId?: string | null;
+  _syncEventId?: string | null;
+  _syncedAt?: string | null;
+  _syncErrorMessage?: string | null;
+  _syncErrorAt?: string | null;
 };
 
 export type ViewMode = "week" | "day";
@@ -90,6 +98,53 @@ function toast(msg: string, kind: "info" | "error" = "info") {
   } catch {}
 }
 
+function toastAction(label: string, actionLabel: string, onAction: () => void) {
+  try {
+    const id = "__ar_toast";
+    let root = document.getElementById(id);
+    if (!root) {
+      root = document.createElement("div");
+      root.id = id;
+      root.style.position = "fixed";
+      root.style.bottom = "16px";
+      root.style.left = "50%";
+      root.style.transform = "translateX(-50%)";
+      root.style.zIndex = "99999";
+      document.body.appendChild(root);
+    }
+    const el = document.createElement("div");
+    el.className = "bg-zinc-900 text-white rounded px-3 py-2 mb-2 shadow flex items-center gap-3";
+    const text = document.createElement("span");
+    text.textContent = label;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = actionLabel;
+    btn.className = "rounded bg-white/10 px-2 py-1 text-xs font-semibold hover:bg-white/20";
+    btn.onclick = () => {
+      onAction();
+      el.remove();
+    };
+    el.appendChild(text);
+    el.appendChild(btn);
+    root.appendChild(el);
+    setTimeout(() => el.remove(), 10000);
+  } catch {}
+}
+
+function timeAgo(value?: string | null) {
+  if (!value) return "—";
+  const ts = new Date(value).getTime();
+  if (!Number.isFinite(ts)) return value;
+  const diffSec = Math.floor((Date.now() - ts) / 1000);
+  if (diffSec < 0) return "just now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+}
 /* ───── Draft helpers ───── */
 type Draft = Record<string, string>;
 const keyCreate = (dateISO: string) => `${STORE}draft_create_${dateISO}`;
@@ -285,7 +340,7 @@ export function NewBookingButton({
     <button
       type="button"
       onClick={handleNew}
-      className="rounded-md bg-indigo-600 text-white px-3 py-1.5 text-sm hover:bg-indigo-500 shadow"
+      className="rounded-full bg-[color:var(--brand-primary)] text-white px-4 py-1.5 text-sm font-semibold shadow-sm shadow-emerald-500/30 hover:brightness-95"
     >
       + New booking
     </button>
@@ -399,7 +454,7 @@ export function GridColumn({
   return (
     <div
       ref={colRef}
-      className="relative border-l border-zinc-200"
+      className="relative border-l border-zinc-200 bg-white"
       style={{ height: totalHeight }}
       onClick={onBackgroundClick}
       onDoubleClick={onBackgroundDblClick}
@@ -410,7 +465,7 @@ export function GridColumn({
         {Array.from({ length: gutterSlots }).map((_, i) => (
           <div
             key={i}
-            className="border-b border-zinc-100"
+            className="border-b border-zinc-100/80"
             style={{ position: "absolute", left: 0, right: 0, top: i * SLOT_PX, height: 1 }}
           />
         ))}
@@ -614,6 +669,13 @@ function BookingBlock({ block, slotMin }: { block: Block; slotMin: number }) {
       serviceId: block.serviceId ?? "",
       customerName: (block as any)._customerName ?? block.title,
       customerPhone: (block as any)._customerPhone ?? "",
+      customerId: (block as any)._customerId ?? null,
+      syncProvider: (block as any)._syncProvider ?? null,
+      syncCalendarId: (block as any)._syncCalendarId ?? null,
+      syncEventId: (block as any)._syncEventId ?? null,
+      syncedAt: (block as any)._syncedAt ?? null,
+      syncErrorMessage: (block as any)._syncErrorMessage ?? null,
+      syncErrorAt: (block as any)._syncErrorAt ?? null,
     });
   };
 
@@ -637,11 +699,11 @@ function BookingBlock({ block, slotMin }: { block: Block; slotMin: number }) {
       }}
       aria-label={`Booking for ${(block as any)._customerName ?? block.title}, ${block.subtitle}`}
       className={[
-        "absolute left-2 right-2 rounded-md px-2 py-1 text-[12px] leading-tight text-left overflow-hidden",
-        "shadow-sm ring-1 ring-inset",
+        "absolute left-2 right-2 rounded-lg px-2.5 py-1.5 text-[12px] leading-tight text-left overflow-hidden",
+        "shadow-sm ring-1 ring-inset ring-black/5 transition hover:shadow-md",
         block.bgHex ? "text-zinc-900 ring-zinc-300" : "",
         !block.bgHex ? block.colorClass : "",
-        "focus:outline-none focus:ring-2 focus:ring-indigo-500/50",
+        "focus:outline-none focus:ring-2 focus:ring-emerald-400/50",
         "group",
       ].join(" ")}
       style={{ ...style, pointerEvents: "auto", cursor: saving ? "progress" : "grab" }}
@@ -692,6 +754,13 @@ type EditProps = {
   serviceId: string;
   customerName: string;
   customerPhone: string;
+  customerId?: string | null;
+  syncProvider?: string | null;
+  syncCalendarId?: string | null;
+  syncEventId?: string | null;
+  syncedAt?: string | null;
+  syncErrorMessage?: string | null;
+  syncErrorAt?: string | null;
 };
 
 function openCreate(p: CreateProps) {
@@ -1087,6 +1156,45 @@ function EditForm({
   const [serviceId, setServiceId] = React.useState<string>(data.serviceId);
   const [saving, setSaving] = React.useState(false);
   const [dirty, setDirty] = React.useState(false);
+  const [syncing, setSyncing] = React.useState(false);
+  const [syncMsg, setSyncMsg] = React.useState<string | null>(null);
+  const [dryRunMsg, setDryRunMsg] = React.useState<string | null>(null);
+  const [timeline, setTimeline] = React.useState<
+    | {
+        summary: string;
+        summaryAI?: boolean;
+        items: Array<{ type: string; at: string; detail: string }>;
+      }
+    | null
+  >(null);
+  const [timelineBusy, setTimelineBusy] = React.useState(false);
+  const [customerTimeline, setCustomerTimeline] = React.useState<
+    | {
+        items: Array<{ type: string; at: string; detail: string }>;
+      }
+    | null
+  >(null);
+  const [customerTimelineBusy, setCustomerTimelineBusy] = React.useState(false);
+  const [signals, setSignals] = React.useState<{
+    summary?: string;
+    noShowCount?: number;
+    cancellationCount?: number;
+    totalVisits?: number;
+    preferredTimeWindow?: string;
+    lastVisit?: string | null;
+    guardrailSummary?: string;
+    suggestedGuardrails?: Array<{ type: string; label: string; payload: Record<string, unknown> }>;
+    activeGuardrails?: Record<string, unknown> | null;
+    flags?: Array<{ type: string; label: string }>;
+  } | null>(null);
+  const [signalsBusy, setSignalsBusy] = React.useState(false);
+  const [guardrailMsg, setGuardrailMsg] = React.useState<string | null>(null);
+  const [optimizer, setOptimizer] = React.useState<{
+    summary?: string;
+    ai?: boolean;
+    suggestions?: Array<{ title: string; detail: string }>;
+  } | null>(null);
+  const [optimizerBusy, setOptimizerBusy] = React.useState(false);
 
   const dk = React.useMemo(() => keyEdit(data.id), [data.id]);
 
@@ -1285,10 +1393,354 @@ function EditForm({
           </label>
         </div>
 
+        <Card className="bg-zinc-50 p-3 text-xs text-zinc-600">
+          <div className="flex items-center justify-between">
+            <span className="font-semibold text-zinc-700">Sync status</span>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                type="button"
+                disabled={syncing}
+                onClick={async () => {
+                  setSyncing(true);
+                  setSyncMsg(null);
+                  try {
+                    const res = await fetch(`/api/org/appointments/${data.id}/sync`, { method: "POST" });
+                    const json = await res.json();
+                    if (!res.ok || !json.ok) {
+                      setSyncMsg(json.error || "Sync failed");
+                    } else {
+                      setSyncMsg("Retry scheduled");
+                    }
+                  } catch {
+                    setSyncMsg("Sync failed");
+                  } finally {
+                    setSyncing(false);
+                  }
+                }}
+                className="px-2 py-1 text-[11px]"
+              >
+                {syncing ? "Syncing…" : "Retry sync"}
+              </Button>
+              <Button
+                variant="secondary"
+                type="button"
+                onClick={async () => {
+                  setDryRunMsg(null);
+                  try {
+                    const res = await fetch(`/api/org/appointments/${data.id}/dry-run-sync`);
+                    const json = await res.json();
+                    if (!res.ok || !json.ok) {
+                      setDryRunMsg(json.error || "Dry-run failed");
+                    } else {
+                      setDryRunMsg(`${json.action}: ${json.reason}`);
+                    }
+                  } catch {
+                    setDryRunMsg("Dry-run failed");
+                  }
+                }}
+                className="px-2 py-1 text-[11px]"
+              >
+                Dry-run
+              </Button>
+            </div>
+          </div>
+          <div className="mt-1 space-y-1">
+            <div>
+              Provider: <span className="font-medium">{data.syncProvider || "Not linked"}</span>
+            </div>
+            <div>
+              Calendar: <span className="font-medium">{data.syncCalendarId || "—"}</span>
+            </div>
+            <div>
+              Event: <span className="font-medium">{data.syncEventId || "—"}</span>
+            </div>
+            <div>
+              Last synced:{" "}
+              <span className="font-medium">
+                {data.syncedAt ? `${timeAgo(data.syncedAt)} (${new Date(data.syncedAt).toLocaleString()})` : "—"}
+              </span>
+            </div>
+            {data.syncErrorMessage ? (
+              <div className="text-red-600">
+                Error: {data.syncErrorMessage}
+                {data.syncErrorAt ? ` (${new Date(data.syncErrorAt).toLocaleString()})` : ""}
+              </div>
+            ) : null}
+            {syncMsg ? <div className="text-zinc-500">{syncMsg}</div> : null}
+            {dryRunMsg ? <div className="text-zinc-500">Dry-run: {dryRunMsg}</div> : null}
+          </div>
+        </Card>
+
+        <Card className="p-3 text-xs text-zinc-700">
+          <div className="flex items-center justify-between">
+            <span className="font-semibold text-zinc-700">Appointment timeline</span>
+            <Button
+              variant="secondary"
+              type="button"
+              disabled={timelineBusy}
+              onClick={async () => {
+                setTimelineBusy(true);
+                try {
+                  const res = await fetch(`/api/org/appointments/${data.id}/timeline`);
+                  const json = await res.json();
+                  if (!res.ok || !json.ok) {
+                    setTimeline({ summary: json.error || "Failed to load timeline.", items: [] });
+                  } else {
+                    setTimeline({
+                      summary: json.summary || "Timeline loaded.",
+                      summaryAI: json.summaryAI,
+                      items: json.timeline || [],
+                    });
+                  }
+                } finally {
+                  setTimelineBusy(false);
+                }
+              }}
+              className="px-2 py-1 text-[11px]"
+            >
+              {timelineBusy ? "Loading…" : "Load"}
+            </Button>
+          </div>
+          {timeline ? (
+            <div className="mt-2 space-y-2">
+              <div className="text-[11px] text-zinc-500">
+                {timeline.summary}
+                {timeline.summaryAI ? " (AI summary from org activity)" : ""}
+              </div>
+              <div className="space-y-1">
+                {timeline.items.map((item) => (
+                  <div key={`${item.type}-${item.at}`} className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1">
+                    <div className="text-[11px] font-semibold">{item.type.replace("_", " ")}</div>
+                    <div className="text-[11px] text-zinc-500">{new Date(item.at).toLocaleString()}</div>
+                    <div className="text-[11px]">{item.detail}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="mt-2 text-[11px] text-zinc-500">Load to see the booking timeline.</div>
+          )}
+        </Card>
+
+        <Card className="p-3 text-xs text-zinc-700">
+          <div className="flex items-center justify-between">
+            <span className="font-semibold text-zinc-700">Customer timeline</span>
+            <Button
+              variant="secondary"
+              type="button"
+              disabled={customerTimelineBusy || !data.customerPhone}
+              onClick={async () => {
+                if (!data.customerPhone) return;
+                setCustomerTimelineBusy(true);
+                try {
+                  const res = await fetch(
+                    `/api/org/clients/timeline?phone=${encodeURIComponent(data.customerPhone)}`
+                  );
+                  const json = await res.json();
+                  if (!res.ok || !json.ok) {
+                    setCustomerTimeline({ items: [] });
+                  } else {
+                    setCustomerTimeline({
+                      items: json.timeline?.events || [],
+                    });
+                  }
+                } finally {
+                  setCustomerTimelineBusy(false);
+                }
+              }}
+              className="px-2 py-1 text-[11px]"
+            >
+              {customerTimelineBusy ? "Loading…" : "Load"}
+            </Button>
+          </div>
+          {customerTimeline ? (
+            <div className="mt-2 space-y-1">
+              {customerTimeline.items.length ? (
+                customerTimeline.items.slice(-6).map((item) => (
+                  <div key={`${item.type}-${item.at}`} className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1">
+                    <div className="text-[11px] font-semibold">{item.type.replace(/_/g, " ")}</div>
+                    <div className="text-[11px] text-zinc-500">{new Date(item.at).toLocaleString()}</div>
+                    <div className="text-[11px]">{item.detail}</div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-[11px] text-zinc-500">No customer activity yet.</div>
+              )}
+            </div>
+          ) : (
+            <div className="mt-2 text-[11px] text-zinc-500">Load to see the customer timeline.</div>
+          )}
+        </Card>
+
+        <Card className="p-3 text-xs text-zinc-700">
+          <div className="flex items-center justify-between">
+            <span className="font-semibold text-zinc-700">Client signals</span>
+            <Button
+              variant="secondary"
+              type="button"
+              disabled={signalsBusy || !data.customerId}
+              onClick={async () => {
+                if (!data.customerId) return;
+                setSignalsBusy(true);
+                setGuardrailMsg(null);
+                try {
+                  const res = await fetch(`/api/org/clients/${data.customerId}/signals`);
+                  const json = await res.json();
+                  if (!res.ok || !json.ok) {
+                    setSignals({ summary: json.error || "Failed to load signals." });
+                    return;
+                  }
+                  setSignals({
+                    summary: json.summary,
+                    noShowCount: json.signals?.noShowCount,
+                    cancellationCount: json.signals?.cancellationCount,
+                    totalVisits: json.signals?.totalVisits,
+                    preferredTimeWindow: json.signals?.preferredTimeWindow,
+                    lastVisit: json.signals?.lastVisit,
+                    guardrailSummary: json.guardrailSummary || "",
+                    suggestedGuardrails: json.suggestedGuardrails || [],
+                    activeGuardrails: json.activeGuardrails || null,
+                    flags: json.flags || [],
+                  });
+                } finally {
+                  setSignalsBusy(false);
+                }
+              }}
+              className="px-2 py-1 text-[11px]"
+            >
+              {signalsBusy ? "Loading…" : "Load"}
+            </Button>
+          </div>
+          {!data.customerId ? (
+            <p className="mt-2 text-[11px] text-zinc-500">No linked customer record yet.</p>
+          ) : signals ? (
+            <div className="mt-2 space-y-2">
+              {signals.summary ? <p>{signals.summary}</p> : null}
+              <div className="text-[11px] text-zinc-500">
+                Visits: {signals.totalVisits ?? "—"} · No-shows: {signals.noShowCount ?? "—"} · Preferred:{" "}
+                {signals.preferredTimeWindow ?? "—"}
+              </div>
+              {signals.flags?.length ? (
+                <div className="flex flex-wrap gap-1">
+                  {signals.flags.map((flag) => (
+                    <span
+                      key={flag.type}
+                      className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-700"
+                    >
+                      {flag.label}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {signals.lastVisit ? (
+                <div className="text-[11px] text-zinc-500">
+                  Last visit: {new Date(signals.lastVisit).toLocaleString()}
+                </div>
+              ) : null}
+              {signals.guardrailSummary ? (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                  {signals.guardrailSummary}
+                </div>
+              ) : null}
+              {signals.activeGuardrails ? (
+                <div className="text-[11px] text-emerald-700">
+                  Active guardrails: {Object.keys(signals.activeGuardrails).length}
+                </div>
+              ) : null}
+              {signals.suggestedGuardrails?.length ? (
+                <div className="space-y-1">
+                  {signals.suggestedGuardrails.map((g) => (
+                    <div key={g.type} className="flex items-center justify-between rounded-md border border-zinc-200 px-2 py-1">
+                      <span>{g.label}</span>
+                      <Button
+                        variant="secondary"
+                        type="button"
+                        onClick={async () => {
+                          if (!data.customerId) return;
+                          setGuardrailMsg(null);
+                          const res = await fetch(`/api/org/clients/${data.customerId}/guardrails`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ guardrail: g.payload }),
+                          });
+                          const json = await res.json();
+                          if (!res.ok || !json.ok) {
+                            setGuardrailMsg(json.error || "Failed to apply guardrail.");
+                          } else {
+                            setGuardrailMsg("Guardrail saved.");
+                          }
+                        }}
+                        className="px-2 py-0.5 text-[11px]"
+                      >
+                        Apply
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {guardrailMsg ? <div className="text-[11px] text-zinc-500">{guardrailMsg}</div> : null}
+            </div>
+          ) : (
+            <p className="mt-2 text-[11px] text-zinc-500">Load signals to see insights.</p>
+          )}
+        </Card>
+
+        <Card className="p-3 text-xs text-zinc-700">
+          <div className="flex items-center justify-between">
+            <span className="font-semibold text-zinc-700">Scheduling optimizer</span>
+            <Button
+              variant="secondary"
+              type="button"
+              disabled={optimizerBusy}
+              onClick={async () => {
+                setOptimizerBusy(true);
+                try {
+                  const res = await fetch(`/api/org/appointments/${data.id}/suggest`);
+                  const json = await res.json();
+                  if (!res.ok || !json.ok) {
+                    setOptimizer({ summary: json.error || "Failed to load suggestions." });
+                    return;
+                  }
+                  setOptimizer({
+                    summary: json.summary,
+                    ai: json.ai,
+                    suggestions: json.suggestions || [],
+                  });
+                } finally {
+                  setOptimizerBusy(false);
+                }
+              }}
+              className="px-2 py-1 text-[11px]"
+            >
+              {optimizerBusy ? "Loading…" : "Load"}
+            </Button>
+          </div>
+          {optimizer ? (
+            <div className="mt-2 space-y-2">
+              {optimizer.summary ? (
+                <div className="text-[11px] text-zinc-500">
+                  {optimizer.summary}
+                  {optimizer.ai ? " (AI summary)" : ""}
+                </div>
+              ) : null}
+              {optimizer.suggestions?.map((s) => (
+                <div key={s.title} className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1">
+                  <div className="text-[11px] font-semibold">{s.title}</div>
+                  <div className="text-[11px] text-zinc-500">{s.detail}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-2 text-[11px] text-zinc-500">Load to see optimization ideas.</p>
+          )}
+        </Card>
+
         <div className="flex items-center justify-between pt-2">
           <div className="flex items-center gap-3">
-            <button
+            <Button
               id="__ar_cancel_btn"
+              variant="destructive"
               type="button"
               onClick={async () => {
                 if (!confirm("Cancel this booking?")) return;
@@ -1297,17 +1749,25 @@ function EditForm({
                 const res = await cancelBooking(fd);
                 if (!res?.ok) return toast(res?.error ?? "Failed to cancel", "error");
                 clearDraft(dk);
-                location.reload();
+                const reloadTimer = window.setTimeout(() => location.reload(), 8000);
+                toastAction("Booking cancelled.", "Undo", async () => {
+                  window.clearTimeout(reloadTimer);
+                  const undo = await undoCancelBooking(data.id, 10);
+                  if (!undo?.ok) return toast(undo?.error ?? "Undo failed", "error");
+                  toast("Cancellation undone.");
+                  location.reload();
+                });
               }}
-              className="text-sm text-red-600 hover:underline"
+              className="text-sm px-3 py-1"
               title="Cancel booking"
             >
               Cancel booking
-            </button>
+            </Button>
 
-            <button
+            <Button
+              variant="secondary"
               type="button"
-              className="text-sm text-zinc-600 hover:underline"
+              className="text-sm px-3 py-1"
               title="Duplicate booking +30m"
               onClick={async () => {
                 const start = new Date(startsAt);
@@ -1329,27 +1789,28 @@ function EditForm({
               }}
             >
               Duplicate
-            </button>
+            </Button>
           </div>
 
           <div className="flex items-center gap-2">
-            <button
+            <Button
+              variant="secondary"
               type="button"
               onClick={() => {
                 // keep draft so user can return later
                 onClose();
               }}
-              className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50"
+              className="text-sm"
             >
               Close
-            </button>
-            <button
+            </Button>
+            <Button
               type="submit"
               disabled={saving}
-              className="rounded-md bg-indigo-600 text-white px-3 py-1.5 text-sm hover:bg-indigo-500 disabled:opacity-60"
+              className="text-sm"
             >
               {saving ? "Saving…" : "Save"}
-            </button>
+            </Button>
           </div>
         </div>
       </form>

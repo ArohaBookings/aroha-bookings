@@ -2,6 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { getOrgEntitlements } from "@/lib/entitlements";
 import { auth } from "@/lib/auth";
 import { getToken } from "next-auth/jwt";
 import { google, gmail_v1 } from "googleapis";
@@ -62,6 +63,37 @@ function safeStr(v: unknown, fallback = "") {
   try { return String(v); } catch { return fallback; }
 }
 
+type Snippet = {
+  id?: string;
+  title: string;
+  body: string;
+  keywords?: string[];
+};
+
+function normalizeSnippets(raw: unknown): Snippet[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      const row = item as Record<string, unknown>;
+      const title = safeStr(row.title || row.name || "", "");
+      const body = safeStr(row.body || row.content || "", "");
+      const keywords = Array.isArray(row.keywords)
+        ? row.keywords.map((k) => safeStr(k, "")).filter(Boolean)
+        : [];
+      if (!title || !body) return null;
+      return { id: safeStr(row.id, ""), title, body, keywords };
+    })
+    .filter(Boolean) as Snippet[];
+}
+
+function pickSnippets(snippets: Snippet[], text: string) {
+  const haystack = text.toLowerCase();
+  return snippets.filter((snip) => {
+    if (!snip.keywords || snip.keywords.length === 0) return false;
+    return snip.keywords.some((k) => haystack.includes(k.toLowerCase()));
+  });
+}
+
 /** Prefer Gmail internalDate (epoch ms). Fallback to Date header. */
 function parseGmailDate(internalDate?: string | null, dateHeader?: string) {
   const a = internalDate ? Number(internalDate) : 0;
@@ -118,47 +150,78 @@ async function getGmail(session: any, req: Request) {
   return google.gmail({ version: "v1", auth: auth2 });
 }
 
-/** Fallback classify. */
-function fallbackClassify(subject: string, snippet: string) {
-  const t = `${subject} ${snippet}`.toLowerCase();
-  if (/(quote|price|book|booking|appointment|availability|estimate|consult)/.test(t))
-    return { label: "inquiry", confidence: 0.83 };
-  if (/(job|cv|resume|career|role|vacancy|application)/.test(t))
-    return { label: "job", confidence: 0.72 };
-  if (/(refund|cancel|complain|issue|problem|fault|broken|support|help)/.test(t))
-    return { label: "support", confidence: 0.76 };
-  return { label: "other", confidence: 0.60 };
+type InboxSettings = {
+  enableAutoDraft: boolean;
+  enableAutoSend: boolean;
+  autoSendAllowedCategories: string[];
+  autoSendMinConfidence: number;
+  neverAutoSendCategories: string[];
+  businessHoursOnly: boolean;
+  dailySendCap: number;
+  requireApprovalForFirstN: number;
+};
+
+function resolveInboxSettings(data: Record<string, unknown>): InboxSettings {
+  const raw = (data.emailAiInbox as Partial<InboxSettings>) || {};
+  return {
+    enableAutoDraft: raw.enableAutoDraft ?? true,
+    enableAutoSend: raw.enableAutoSend ?? false,
+    autoSendAllowedCategories:
+      raw.autoSendAllowedCategories ?? ["booking_request", "reschedule", "cancellation", "pricing", "faq", "admin"],
+    autoSendMinConfidence: typeof raw.autoSendMinConfidence === "number" ? raw.autoSendMinConfidence : 92,
+    neverAutoSendCategories: raw.neverAutoSendCategories ?? ["complaint", "spam"],
+    businessHoursOnly: raw.businessHoursOnly ?? true,
+    dailySendCap: typeof raw.dailySendCap === "number" ? raw.dailySendCap : 40,
+    requireApprovalForFirstN: typeof raw.requireApprovalForFirstN === "number" ? raw.requireApprovalForFirstN : 20,
+  };
 }
 
-/** Optional OpenAI classify. */
-async function classify(subject: string, snippet: string) {
-  if (!openai) return fallbackClassify(subject, snippet);
-  try {
-    const prompt = `Classify the email by short label and give a confidence [0..1].
-Subject: ${subject}
-Preview: ${snippet}
-Labels: inquiry, job, support, other
-Return JSON: {"label":"...", "confidence":0.x}`;
-    const res = await withTimeout(
-      openai.chat.completions.create({
-        model: OPENAI_MODEL,
-        temperature: 0,
-        messages: [
-          { role: "system", content: "Return pure JSON. No prose." },
-          { role: "user", content: prompt },
-        ],
-      }),
-      AI_TIMEOUT_MS,
-      "classification"
-    );
-    const txt = res.choices[0]?.message?.content?.trim() || "";
-    const j = JSON.parse(txt);
-    const label = typeof j?.label === "string" ? j.label : "other";
-    const confidence = typeof j?.confidence === "number" ? j.confidence : 0.6;
-    return { label, confidence };
-  } catch {
-    return fallbackClassify(subject, snippet);
-  }
+type Classification = {
+  category: string;
+  priority: "low" | "normal" | "high" | "urgent";
+  risk: "safe" | "needs_review" | "blocked";
+  confidence: number;
+  reasons: string[];
+};
+
+function classifyDeterministic(subject: string, snippet: string): Classification {
+  const t = `${subject} ${snippet}`.toLowerCase();
+  const reasons: string[] = [];
+
+  const has = (re: RegExp, reason: string) => {
+    if (re.test(t)) reasons.push(reason);
+    return re.test(t);
+  };
+
+  const isComplaint = has(/complaint|unhappy|bad service|refund|chargeback|fraud|scam|lawsuit/, "Complaint or dispute language");
+  const isLegal = has(/lawyer|legal|court|claim|liability|contract breach/, "Legal-sensitive language");
+  const isMedical = has(/medical|doctor|injury|pain|emergency|diagnosis/, "Medical-sensitive language");
+
+  const urgent = has(/urgent|asap|immediately|today|emergency/, "Urgency cues detected");
+  const high = has(/tomorrow|soon|priority/, "High urgency words detected");
+
+  let category = "other";
+  if (has(/reschedul|postpone|move appointment|change time/, "Reschedule request")) category = "reschedule";
+  else if (has(/cancel|cancellation/, "Cancellation request")) category = "cancellation";
+  else if (has(/price|pricing|cost|quote|estimate|rate|fee/, "Pricing intent")) category = "pricing";
+  else if (has(/booking|book|appointment|availability|consult/, "Booking intent")) category = "booking_request";
+  else if (has(/complaint|unhappy|refund|issue|problem|broken/, "Complaint or issue")) category = "complaint";
+  else if (has(/hours|open|location|address|parking|where are you/, "FAQ-like inquiry")) category = "faq";
+  else if (has(/invoice|receipt|billing|account|login|password/, "Admin/account request")) category = "admin";
+  else if (has(/unsubscribe|promotion|win money|crypto|lottery/, "Spam-like content")) category = "spam";
+
+  let risk: Classification["risk"] = "safe";
+  if (isComplaint || isLegal || isMedical) risk = "needs_review";
+  if (has(/threat|sue|suing|legal action/, "Threatening language")) risk = "blocked";
+
+  let priority: Classification["priority"] = "normal";
+  if (urgent) priority = "urgent";
+  else if (high) priority = "high";
+  else if (has(/whenever|no rush/, "Low urgency")) priority = "low";
+
+  const confidence = Math.min(0.98, Math.max(0.5, 0.6 + reasons.length * 0.08));
+
+  return { category, priority, risk, confidence, reasons: reasons.slice(0, 3) };
 }
 
 /** Generate reply body per org settings. */
@@ -170,19 +233,28 @@ async function generateReplyBody(opts: {
   subject: string;
   preview: string;
   label: string;
+  snippets?: Snippet[];
 }) {
-  const { businessName, defaultTone, instructionPrompt, signature, subject, preview, label } = opts;
+  const { businessName, defaultTone, instructionPrompt, signature, subject, preview, label, snippets } = opts;
 
   if (!openai) {
     const base = `Kia ora,\n\nThanks for reaching out about “${subject}”. We’ll come back to you shortly.\n`;
     return signature ? `${base}\n${signature}` : base;
   }
 
+  const snippetBlock = snippets?.length
+    ? `Approved snippets (use verbatim if relevant):\n${snippets
+        .map((s) => `- ${s.title}: ${s.body}`)
+        .join("\n")}`
+    : "";
+
   const system = `
 You are the email assistant for ${businessName}.
 Tone: ${defaultTone}. Use NZ English.
 Follow owner's instructions strictly:
 ${instructionPrompt || "(none)"}
+- Use approved snippets when relevant. Do not invent policy text.
+${snippetBlock}
 - Be concise (80–140 words).
 - Never invent prices/times/promises.
 - Ask only for essentials if needed.
@@ -403,6 +475,7 @@ async function runWithConcurrency<T, R>(
    Route: POST  (run a poll)
 ────────────────────────────────────────────── */
 export async function POST(req: Request) {
+  let orgId: string | null = null;
   try {
     // 1) Auth & org
     const session = await auth();
@@ -415,16 +488,115 @@ export async function POST(req: Request) {
       select: { orgId: true },
       orderBy: { orgId: "asc" },
     });
-    const orgId = membership?.orgId;
+    orgId = membership?.orgId ?? null;
     if (!orgId) {
       return NextResponse.json({ ok: false, error: "No organization found for user" }, { status: 400 });
+    }
+
+    const entitlements = await getOrgEntitlements(orgId);
+    if (!entitlements.features.emailAi) {
+      return NextResponse.json({ ok: false, error: "Email AI disabled for this org" }, { status: 403 });
     }
 
     // 2) Settings
     const settings = await prisma.emailAISettings.findUnique({ where: { orgId } });
     if (!settings?.enabled) {
+      await prisma.orgSettings.upsert({
+        where: { orgId },
+        update: {
+          data: {
+            ...(((await prisma.orgSettings.findUnique({ where: { orgId }, select: { data: true } }))?.data as Record<string, unknown>) || {}),
+            emailAiSync: {
+              lastAttemptAt: Date.now(),
+              lastErrorAt: Date.now(),
+              lastError: "Email AI disabled for this org",
+            },
+          } as any,
+        },
+        create: {
+          orgId,
+          data: {
+            emailAiSync: {
+              lastAttemptAt: Date.now(),
+              lastErrorAt: Date.now(),
+              lastError: "Email AI disabled for this org",
+            },
+          } as any,
+        },
+      });
       return NextResponse.json({ ok: false, error: "Email AI disabled for this org" }, { status: 400 });
     }
+
+    const orgSettings = await prisma.orgSettings.findUnique({
+      where: { orgId },
+      select: { data: true },
+    });
+    const orgSettingsData = (orgSettings?.data as Record<string, unknown>) || {};
+    const inboxSettings = resolveInboxSettings(orgSettingsData);
+    const effectiveInboxSettings = {
+      ...inboxSettings,
+      enableAutoDraft: inboxSettings.enableAutoDraft && entitlements.automation.enableAutoDraft,
+      enableAutoSend: inboxSettings.enableAutoSend && entitlements.automation.enableAutoSend,
+      autoSendMinConfidence: Math.max(inboxSettings.autoSendMinConfidence, entitlements.automation.minConfidence),
+      dailySendCap: Math.min(inboxSettings.dailySendCap, entitlements.automation.dailySendCap),
+      requireApprovalForFirstN: Math.max(
+        inboxSettings.requireApprovalForFirstN,
+        entitlements.automation.requireApprovalFirstN
+      ),
+    };
+    const voice = (orgSettingsData.aiVoice as {
+      tone?: string;
+      signature?: string;
+      tabooPhrases?: string[];
+      forbiddenPhrases?: string[];
+      emojiLevel?: 0 | 1 | 2;
+      length?: "short" | "medium" | "long";
+      lengthPreference?: "short" | "medium" | "long";
+    }) || {};
+    const voiceTone = voice.tone && voice.tone.trim() ? voice.tone : settings.defaultTone;
+    const voiceSignature = typeof voice.signature === "string" ? voice.signature : settings.signature;
+    const forbidden = [
+      ...(Array.isArray(voice.tabooPhrases) ? voice.tabooPhrases : []),
+      ...(Array.isArray(voice.forbiddenPhrases) ? voice.forbiddenPhrases : []),
+    ].filter(Boolean);
+    const lengthPref = voice.lengthPreference || voice.length;
+    const kbEntries = Array.isArray(orgSettingsData.knowledgeBase) ? orgSettingsData.knowledgeBase : [];
+    const kbSnippets = kbEntries.map((entry: any) => ({
+      id: entry.id ? `kb_${entry.id}` : `kb_${Math.random().toString(36).slice(2)}`,
+      title: String(entry.title || ""),
+      body: String(entry.content || ""),
+      keywords: Array.isArray(entry.tags) ? entry.tags : [],
+    }));
+    const snippets = normalizeSnippets([...(orgSettingsData.emailSnippets || []), ...kbSnippets]);
+    const voiceInstruction = [
+      settings.instructionPrompt || "",
+      forbidden.length ? `Forbidden phrases: ${forbidden.join(", ")}` : "",
+      typeof voice.emojiLevel === "number" ? `Emoji level (0-2): ${voice.emojiLevel}` : "",
+      lengthPref ? `Preferred reply length: ${lengthPref}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    await prisma.orgSettings.upsert({
+      where: { orgId },
+      update: {
+        data: {
+          ...orgSettingsData,
+          emailAiSync: {
+            ...(orgSettingsData.emailAiSync as any),
+            lastAttemptAt: Date.now(),
+          },
+        } as any,
+      },
+      create: {
+        orgId,
+        data: {
+          emailAiSync: {
+            lastAttemptAt: Date.now(),
+          },
+        } as any,
+      },
+    });
 
     // 3) Gmail client
     const gmail = await getGmail(session, req);
@@ -461,6 +633,9 @@ export async function POST(req: Request) {
       receivedMs: number;
       label: string;
       confidence: number;
+      priority: "low" | "normal" | "high" | "urgent";
+      risk: "safe" | "needs_review" | "blocked";
+      reasons: string[];
       score: number;
       // small thread peek for UI
       threadPeek?: { from: string; subject: string }[];
@@ -547,16 +722,31 @@ export async function POST(req: Request) {
           } catch { /* ignore */ }
         }
 
-        // Classification
-        const { label, confidence } = await classify(subject, snippet);
+        // Classification (deterministic-first)
+        const classification = classifyDeterministic(subject, snippet);
+        const label = classification.category;
+        const confidence = classification.confidence;
 
         // Rank score: newer + confident first
         const ageHours = Math.max(1, (Date.now() - receivedMs) / 3_600_000);
         const score = confidence * 0.7 + (1 / ageHours) * 0.3;
 
         candidates.push({
-          id, threadId, subject, snippet, from, replyTo, messageId, receivedMs,
-          label, confidence, score, threadPeek
+          id,
+          threadId,
+          subject,
+          snippet,
+          from,
+          replyTo,
+          messageId,
+          receivedMs,
+          label,
+          confidence,
+          priority: classification.priority,
+          risk: classification.risk,
+          reasons: classification.reasons,
+          score,
+          threadPeek,
         });
       }
 
@@ -570,91 +760,239 @@ export async function POST(req: Request) {
     // Hard cap
     const take = candidates.slice(0, Math.max(0, Math.min(MAX_DRAFTS_PER_RUN, candidates.length)));
 
+    // Daily caps and approval threshold (org-wide)
+    const dayStart = new Date();
+    dayStart.setUTCHours(0, 0, 0, 0);
+    const [sentToday, totalSent] = await Promise.all([
+      prisma.emailAILog.count({
+        where: { orgId, action: { in: ["auto_sent", "sent"] }, createdAt: { gte: dayStart } },
+      }),
+      prisma.emailAILog.count({
+        where: { orgId, action: { in: ["auto_sent", "sent"] } },
+      }),
+    ]);
+    let sentCounter = sentToday;
+    let totalSentCounter = totalSent;
+
+    const withinBusinessHours = (ms: number) => {
+      if (!inboxSettings.businessHoursOnly) return true;
+      const hours = settings.businessHoursJson as Record<string, [number, number]> | null | undefined;
+      const tz = settings.businessHoursTz || "Pacific/Auckland";
+      if (!hours || !Object.keys(hours).length) return true;
+      const date = new Date(ms);
+      const parts = new Intl.DateTimeFormat("en-NZ", {
+        timeZone: tz,
+        weekday: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).formatToParts(date);
+      const map = new Map(parts.map((p) => [p.type, p.value]));
+      const weekday = (map.get("weekday") || "Mon").toLowerCase().slice(0, 3);
+      const hour = Number(map.get("hour") || 0);
+      const minute = Number(map.get("minute") || 0);
+      const minutes = hour * 60 + minute;
+      const window = hours[weekday];
+      if (!window) return false;
+      return minutes >= window[0] && minutes <= window[1];
+    };
+
     // Draft with small OpenAI concurrency
     await runWithConcurrency(take, OPENAI_CONCURRENCY, async (c) => {
       try {
         const nameGuess = (c.from.split("<")[0]?.trim().replace(/["']/g, "")) || "there";
         const preview = `From ${nameGuess}: ${c.snippet}`;
-        const suggestedBody = await generateReplyBody({
-          businessName: settings.businessName,
-          defaultTone: settings.defaultTone,
-          instructionPrompt: settings.instructionPrompt,
-          signature: settings.signature,
-          subject: c.subject,
-          preview,
-          label: c.label,
-        });
 
-        const draftId = await createDraft(
-          gmail,
-          c.replyTo,
-          c.subject,
-          c.messageId,
-          c.messageId,
-          suggestedBody,
-          c.threadId
-        );
+        const isBlocked = c.risk === "blocked";
+        const isNeedsReview = c.risk === "needs_review";
+        const automationPaused = inboxSettings.automationPaused;
+        const autoSendEligible =
+          !automationPaused &&
+          effectiveInboxSettings.enableAutoSend &&
+          !isBlocked &&
+          c.risk === "safe" &&
+          inboxSettings.autoSendAllowedCategories.includes(c.label) &&
+          !inboxSettings.neverAutoSendCategories.includes(c.label) &&
+          c.confidence * 100 >= effectiveInboxSettings.autoSendMinConfidence &&
+          withinBusinessHours(c.receivedMs) &&
+          sentCounter < effectiveInboxSettings.dailySendCap &&
+          totalSentCounter >= effectiveInboxSettings.requireApprovalForFirstN;
+
+        const shouldDraft = !automationPaused && effectiveInboxSettings.enableAutoDraft && !isBlocked;
+        const shouldGenerate = shouldDraft || autoSendEligible;
+
+        const matchedSnippets = shouldGenerate
+          ? pickSnippets(snippets, `${c.subject} ${c.snippet} ${c.threadPeek}`)
+          : [];
+        const suggestedBody = shouldGenerate
+          ? await generateReplyBody({
+              businessName: settings.businessName,
+              defaultTone: voiceTone,
+              instructionPrompt: voiceInstruction,
+              signature: voiceSignature,
+              subject: c.subject,
+              preview,
+              label: c.label,
+              snippets: matchedSnippets,
+            })
+          : "";
+
+        const draftId = shouldDraft
+          ? await createDraft(
+              gmail,
+              c.replyTo,
+              c.subject,
+              c.messageId,
+              c.messageId,
+              suggestedBody,
+              c.threadId
+            )
+          : null;
 
         await markRead(gmail, c.id);
 
-// Log queued_for_review
-await prisma.emailAILog.create({
-  data: {
-    orgId,
-    gmailThreadId: c.threadId,
-    gmailMsgId: c.id,
-    direction: "inbound",
-    classification: c.label,
-    confidence: c.confidence,
-    subject: c.subject,
-    snippet: c.snippet,
-    action: "queued_for_review",
-    reason:
-      c.confidence >= (settings.minConfidenceToSend ?? 0.65)
-        ? "auto_drafted_high_conf"
-        : "auto_drafted_low_conf",
+        const action = isBlocked
+          ? "skipped_blocked"
+          : autoSendEligible
+          ? "queued_for_review"
+          : "queued_for_review";
 
-    // use the real Gmail delivery time for ordering (until you add receivedAt column)
-    createdAt: new Date(Number.isFinite(c.receivedMs) ? c.receivedMs : Date.now()),
+        const log = await prisma.emailAILog.create({
+          data: {
+            orgId,
+            gmailThreadId: c.threadId,
+            gmailMsgId: c.id,
+            direction: "inbound",
+            classification: c.label,
+            confidence: c.confidence,
+            subject: c.subject,
+            snippet: c.snippet,
+            action,
+            reason:
+              c.confidence >= (settings.minConfidenceToSend ?? 0.65)
+                ? "auto_drafted_high_conf"
+                : "auto_drafted_low_conf",
 
-    // everything else lives in rawMeta
-    rawMeta: {
-      from: c.from,
-      replyTo: c.replyTo,
-      emailEpochMs: c.receivedMs,
-      threadPeek: c.threadPeek,
-      draftId: draftId ?? null,
-      suggested: {
-        subject: c.subject.toLowerCase().startsWith("re:")
-          ? c.subject
-          : `Re: ${c.subject}`,
-        body: suggestedBody,
-      },
-    } as any,
-  },
-});
-drafted++;
+            // use the real Gmail delivery time for ordering (until you add receivedAt column)
+            createdAt: new Date(Number.isFinite(c.receivedMs) ? c.receivedMs : Date.now()),
+
+            // everything else lives in rawMeta
+            rawMeta: {
+              from: c.from,
+              replyTo: c.replyTo,
+              emailEpochMs: c.receivedMs,
+              threadPeek: c.threadPeek,
+              draftId: draftId ?? null,
+              suggested: shouldGenerate
+                ? {
+                    subject: c.subject.toLowerCase().startsWith("re:")
+                      ? c.subject
+                      : `Re: ${c.subject}`,
+                    body: suggestedBody,
+                  }
+                : null,
+              ai: {
+                category: c.label,
+                priority: c.priority,
+                risk: c.risk,
+                confidence: c.confidence,
+                reasons: c.reasons,
+                autoSendEligible,
+                usedSnippets: matchedSnippets.map((s) => s.title),
+              },
+            } as any,
+          },
+        });
+
+        if (autoSendEligible) {
+          const origin = new URL(req.url).origin;
+          await fetch(`${origin}/api/email-ai/send`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ logId: log.id, subject: log.subject, body: suggestedBody }),
+          }).catch(() => {});
+          sentCounter += 1;
+          totalSentCounter += 1;
+        }
+
+        if (shouldDraft) drafted++;
 } catch {
   skipped++;
 }
 });
 
-// ---- response
-return NextResponse.json({
-  ok: true,
-  scanned,
-  drafted,
-  skipped,
-  draftsImported,
-  caps: {
-    MAX_PAGES,
-    MAX_RESULTS_PER_PAGE,
-    MAX_DRAFTS_PER_RUN,
-    OPENAI_CONCURRENCY,
-  },
-});
+    await prisma.orgSettings.upsert({
+      where: { orgId },
+      update: {
+        data: {
+          ...orgSettingsData,
+          emailAiSync: {
+            ...(orgSettingsData.emailAiSync as any),
+            lastSuccessAt: Date.now(),
+            lastError: null,
+            lastErrorAt: null,
+          },
+        } as any,
+      },
+      create: {
+        orgId,
+        data: {
+          emailAiSync: {
+            lastSuccessAt: Date.now(),
+            lastError: null,
+            lastErrorAt: null,
+          },
+        } as any,
+      },
+    });
+
+    // ---- response
+    return NextResponse.json({
+      ok: true,
+      scanned,
+      drafted,
+      skipped,
+      draftsImported,
+      caps: {
+        MAX_PAGES,
+        MAX_RESULTS_PER_PAGE,
+        MAX_DRAFTS_PER_RUN,
+        OPENAI_CONCURRENCY,
+      },
+    });
   } catch (err: any) {
     console.error("[email-ai/poll] error:", err);
+    try {
+      // best-effort sync status update (if orgId available via closure)
+      // eslint-disable-next-line @typescript-eslint/no-use-before-define
+      if (typeof orgId === "string") {
+        await prisma.orgSettings.upsert({
+          where: { orgId },
+          update: {
+            data: {
+              ...(((await prisma.orgSettings.findUnique({ where: { orgId }, select: { data: true } }))?.data as Record<string, unknown>) || {}),
+              emailAiSync: {
+                lastAttemptAt: Date.now(),
+                lastErrorAt: Date.now(),
+                lastError: err?.message || "Unexpected error",
+              },
+            } as any,
+          },
+          create: {
+            orgId,
+            data: {
+              emailAiSync: {
+                lastAttemptAt: Date.now(),
+                lastErrorAt: Date.now(),
+                lastError: err?.message || "Unexpected error",
+              },
+            } as any,
+          },
+        });
+      }
+    } catch {
+      // ignore sync status failures
+    }
     return NextResponse.json(
       { ok: false, error: err?.message || "Unexpected error" },
       { status: 500 }

@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { getGCal } from "@/lib/google-calendar";
+import { getCalendarClient } from "@/lib/integrations/google/calendar";
 import GoogleCalendarSelectClient from "./SelectClient";
 
 type CalendarListItem = {
@@ -39,12 +39,12 @@ export default async function GoogleCalendarSelectPage() {
   let error: string | null = null;
 
   try {
-    const gcal = await getGCal();
+    const gcal = await getCalendarClient(membership.orgId);
 
     // If your getGCal() is typed as Calendar | null, this protects against it
     if (!gcal) {
       error =
-        "Google is not connected for this session. Please connect Google in Aroha Bookings, then try again.";
+        "Google is not connected for this organization. Please connect Google, then try again.";
     } else {
       const res = await gcal.calendarList.list({
         minAccessRole: "writer",

@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db";
 import { requireRetellContext } from "@/lib/retell/auth";
 import { normalizePhone } from "@/lib/retell/phone";
 import { withCors } from "@/lib/cors";
-import { pushAppointmentToGoogle } from "@/lib/google-calendar";
+import { createOrUpdateAppointmentEvent } from "@/lib/integrations/google/syncAppointment";
 
 export const runtime = "nodejs";
 
@@ -158,7 +158,7 @@ export async function POST(req: Request) {
     });
 
     // ── Fire-and-forget Google Calendar sync (does nothing if not connected)
-    pushAppointmentToGoogle(result.appt.id).catch((err) =>
+    createOrUpdateAppointmentEvent(ctx.org.id, result.appt.id).catch((err) =>
       console.error("google-sync(book) error:", err)
     );
 

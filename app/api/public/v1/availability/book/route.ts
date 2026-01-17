@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { normalizePhone } from "@/lib/retell/phone";
 import { withCors } from "@/lib/cors";
+import { createOrUpdateAppointmentEvent } from "@/lib/integrations/google/syncAppointment";
 
 export const runtime = "nodejs";
 
@@ -51,6 +52,10 @@ export async function POST(req: Request) {
       },
       select: { id: true, startsAt: true, endsAt: true },
     });
+
+    createOrUpdateAppointmentEvent(org.id, appt.id).catch((err) =>
+      console.error("google-sync(web-book) error:", err)
+    );
 
     return new NextResponse(JSON.stringify({ ok: true, appointment: appt }),
       { headers: withCors("*") });

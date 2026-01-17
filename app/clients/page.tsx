@@ -72,12 +72,71 @@ const dayDate = (iso?: string) =>
       })
     : "—";
 
+const DEMO_CLIENTS: Client[] = [
+  {
+    id: "demo_1",
+    firstName: "Ava",
+    lastName: "Ngatai",
+    email: "ava@example.com",
+    phone: "+64210000001",
+    tags: ["vip", "weekly"],
+    status: "vip",
+    preferredStaff: "Ruby",
+    lastVisit: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+    totalSpendCents: 42000,
+    notes: "Prefers morning appointments.",
+    allowMarketing: true,
+    allowReminders: true,
+    upcoming: [],
+    history: [],
+  },
+  {
+    id: "demo_2",
+    firstName: "Liam",
+    lastName: "Rangi",
+    email: "liam@example.com",
+    phone: "+64210000002",
+    tags: ["new"],
+    status: "new",
+    preferredStaff: "Jess",
+    lastVisit: "",
+    totalSpendCents: 0,
+    notes: "",
+    allowMarketing: false,
+    allowReminders: true,
+    upcoming: [],
+    history: [],
+  },
+];
+
 /* ──────────────────────────────────────────────────────────────
    Page
    ────────────────────────────────────────────────────────────*/
 export default function ClientsPage() {
   // data (wire to server later)
   const [clients, setClients] = useState<Client[]>([]);
+  const [demoMode, setDemoMode] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/org/demo", { cache: "no-store" });
+        const j = await res.json();
+        if (alive && res.ok) setDemoMode(Boolean(j.demoMode));
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!demoMode) return;
+    if (clients.length === 0) setClients(DEMO_CLIENTS);
+  }, [demoMode, clients.length]);
 
   // table state
   const [query, setQuery] = useState("");
@@ -653,6 +712,8 @@ function ClientDrawer({
   const [notes, setNotes] = useState(client.notes ?? "");
   const [allowMarketing, setAllowMarketing] = useState<boolean>(client.allowMarketing);
   const [allowReminders, setAllowReminders] = useState<boolean>(client.allowReminders);
+  const [timeline, setTimeline] = useState<Array<{ type: string; at: string; detail: string }> | null>(null);
+  const [timelineBusy, setTimelineBusy] = useState(false);
 
   // add tag quickly
   const [tagInput, setTagInput] = useState("");
@@ -907,6 +968,52 @@ function ClientDrawer({
                 )}
               </div>
             </div>
+          </div>
+
+          <div className="rounded-lg border border-black p-3">
+            <div className="flex items-center justify-between">
+              <div className="font-semibold">Customer timeline</div>
+              <button
+                className="rounded-md border border-black px-2 py-1 text-xs"
+                onClick={async () => {
+                  if (!client.phone && !client.email) return;
+                  setTimelineBusy(true);
+                  try {
+                    const query = client.phone
+                      ? `phone=${encodeURIComponent(client.phone)}`
+                      : `email=${encodeURIComponent(client.email || "")}`;
+                    const res = await fetch(`/api/org/clients/timeline?${query}`);
+                    const json = await res.json();
+                    if (!res.ok || !json.ok) {
+                      setTimeline([]);
+                    } else {
+                      setTimeline(json.timeline?.events || []);
+                    }
+                  } finally {
+                    setTimelineBusy(false);
+                  }
+                }}
+              >
+                {timelineBusy ? "Loading…" : "Load"}
+              </button>
+            </div>
+            {timeline ? (
+              <div className="mt-2 space-y-2 text-sm">
+                {timeline.length ? (
+                  timeline.slice(-6).map((item) => (
+                    <div key={`${item.type}-${item.at}`} className="rounded-md border border-black p-2">
+                      <div className="text-xs font-semibold">{item.type.replace(/_/g, " ")}</div>
+                      <div className="text-xs">{new Date(item.at).toLocaleString()}</div>
+                      <div className="text-xs">{item.detail}</div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-sm">No customer activity yet.</div>
+                )}
+              </div>
+            ) : (
+              <div className="mt-2 text-sm">Load to view timeline.</div>
+            )}
           </div>
 
           {/* Actions */}

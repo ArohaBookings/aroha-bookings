@@ -47,27 +47,5 @@ export default async function OrgLayout({
     if (!isMember) redirect("/unauthorized"); // or /onboarding if you prefer
   }
 
-  // Simple per-org chrome; you can expand later (breadcrumbs, active tabs, etc.)
-  return (
-    <div className="min-h-screen bg-zinc-50">
-      <header className="h-12 border-b bg-white flex items-center justify-between px-4">
-        <div className="font-medium">
-          {org.name} <span className="text-zinc-500">({org.slug})</span>
-        </div>
-        <nav className="text-sm flex gap-3">
-          <a className="hover:underline" href={`/o/${org.slug}/dashboard`}>
-            Dashboard
-          </a>
-          <a className="hover:underline" href={`/o/${org.slug}/settings`}>
-            Settings
-          </a>
-          <a className="hover:underline" href={`/b/${org.slug}`} target="_blank" rel="noreferrer">
-            Public Booking
-          </a>
-        </nav>
-      </header>
-
-      <main className="max-w-6xl mx-auto p-6">{children}</main>
-    </div>
-  );
+  return <>{children}</>;
 }
