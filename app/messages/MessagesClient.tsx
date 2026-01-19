@@ -3,6 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import Input from "@/components/ui/Input";
+import IntentActionsPanel from "@/components/IntentActionsPanel";
 
 type MessageItem = {
   id: string;
@@ -71,6 +72,7 @@ export default function MessagesClient() {
   const [settings, setSettings] = React.useState<MessagesSettings | null>(null);
   const [isMobile, setIsMobile] = React.useState(false);
   const [entitlementError, setEntitlementError] = React.useState<string | null>(null);
+  const [orgSlug, setOrgSlug] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     const media = window.matchMedia("(max-width: 1024px)");
@@ -92,7 +94,7 @@ export default function MessagesClient() {
         const res = await fetch(`/api/messages/inbox?${params.toString()}`, { cache: "no-store" });
         const j = await res.json();
         if (!cancelled && !j?.ok) {
-          setEntitlementError(j?.error || "Messages Hub is disabled for this org.");
+          setEntitlementError(j?.error || "Messages Hub is not included in your plan.");
           return;
         }
         if (!cancelled && j?.ok) {
@@ -110,6 +112,25 @@ export default function MessagesClient() {
       cancelled = true;
     };
   }, [query, filter, sort, selectedId]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    async function loadOrg() {
+      try {
+        const res = await fetch("/api/org/identity", { cache: "no-store" });
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled && res.ok && data?.org?.slug) {
+          setOrgSlug(String(data.org.slug));
+        }
+      } catch {
+        // ignore
+      }
+    }
+    loadOrg();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -151,6 +172,36 @@ export default function MessagesClient() {
           </Link>
         </div>
       </header>
+
+      {!loading && !entitlementError && items.length === 0 && (
+        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+          <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Coming soon</p>
+          <h2 className="mt-2 text-xl font-semibold text-zinc-900">
+            AI replies for Instagram, WhatsApp, and Webchat
+          </h2>
+          <p className="mt-2 text-sm text-zinc-600">
+            Draft-first, confidence-based automation with unified timeline and client memory.
+          </p>
+          <div className="mt-4 grid gap-2 text-sm text-zinc-700 sm:grid-cols-3">
+            {[
+              { label: "Instagram", note: "Coming soon" },
+              { label: "WhatsApp", note: "Coming soon" },
+              { label: "Webchat", note: "Coming soon" },
+            ].map((item) => (
+              <label
+                key={item.label}
+                className="flex items-center justify-between rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2"
+              >
+                <span className="flex items-center gap-2">
+                  <input type="checkbox" disabled />
+                  {item.label}
+                </span>
+                <span className="text-xs text-zinc-500">{item.note}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-zinc-200 bg-white/80 p-3 shadow-sm">
         <div className="flex items-center gap-2 text-xs text-zinc-600">
@@ -290,6 +341,13 @@ export default function MessagesClient() {
                 <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-700">
                   {selected.body}
                 </div>
+
+                <IntentActionsPanel
+                  text={selected.body}
+                  category={selected.category}
+                  risk={selected.risk}
+                  orgSlug={orgSlug}
+                />
 
                 {selected.quickActions && selected.quickActions.length > 0 && (
                   <div className="flex flex-wrap gap-2">

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { canAccessSuperAdminByEmail } from "@/lib/roles";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,15 +15,6 @@ function json(data: unknown, status = 200) {
   });
 }
 
-function isSuperadmin(email?: string | null): boolean {
-  if (!email) return false;
-  const list = (process.env.SUPERADMINS || "")
-    .split(",")
-    .map((x) => x.trim().toLowerCase())
-    .filter(Boolean);
-  return list.includes(email.trim().toLowerCase());
-}
-
 export async function GET() {
   if (process.env.NODE_ENV === "production") {
     return json({ ok: false, error: "Not available in production" }, 404);
@@ -31,7 +23,8 @@ export async function GET() {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email || null;
   if (!email) return json({ ok: false, error: "Not authenticated" }, 401);
-  if (!isSuperadmin(email)) return json({ ok: false, error: "Not authorized" }, 403);
+  const allowed = await canAccessSuperAdminByEmail(email);
+  if (!allowed) return json({ ok: false, error: "Not authorized" }, 403);
 
   const [orgs, staff, customers, appts] = await Promise.all([
     prisma.organization.findMany({ select: { id: true, name: true } }),

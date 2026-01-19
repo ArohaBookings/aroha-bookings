@@ -25,7 +25,7 @@ model User {
   updatedAt     DateTime  @updatedAt
 
   // 🔥 Global role for admin access
-  role          UserRole  @default(USER)
+  role UserRole @default(USER)
 
   // App relations
   memberships Membership[]
@@ -36,20 +36,19 @@ model User {
 }
 
 model Account {
-  id                String  @id @default(cuid())
-  userId            String
-  type              String
-  provider          String
-  providerAccountId String
-  refresh_token     String?
-  access_token      String?
-  expires_at        Int?
-  token_type        String?
-  scope             String?
-  id_token          String?
-  session_state     String?
+  id                       String  @id @default(cuid())
+  userId                   String
+  type                     String
+  provider                 String
+  providerAccountId        String
+  refresh_token            String?
+  access_token             String?
+  expires_at               Int?
+  token_type               String?
+  scope                    String?
+  id_token                 String?
+  session_state            String?
   refresh_token_expires_in Int?
-
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -135,6 +134,8 @@ model Organization {
   emailAISettings     EmailAISettings?
   emailAILogs         EmailAILog[]
   callLogs            CallLog[]
+  clientProfiles      ClientProfile[]
+  webhookForwardJobs  WebhookForwardJob[]
 
   @@index([name])
   @@index([slug])
@@ -266,8 +267,9 @@ model Customer {
   email     String?
   createdAt DateTime @default(now())
 
-  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  org          Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
   appointments Appointment[]
+  profile      ClientProfile?
 
   @@unique([orgId, phone])
   @@index([orgId, email])
@@ -287,23 +289,23 @@ model Appointment {
   service  Service?     @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   customer Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
 
-  customerName  String
-  customerPhone String
-  customerEmail String?
-  notes         String?
-  startsAt      DateTime
-  endsAt        DateTime
-  source        String            @default("phone")
-  status        AppointmentStatus @default(SCHEDULED)
-  cancelledAt   DateTime?
-  cancelledBy   String?
+  customerName            String
+  customerPhone           String
+  customerEmail           String?
+  notes                   String?
+  startsAt                DateTime
+  endsAt                  DateTime
+  source                  String            @default("phone")
+  status                  AppointmentStatus @default(SCHEDULED)
+  cancelledAt             DateTime?
+  cancelledBy             String?
   externalCalendarEventId String?
   externalCalendarId      String?
   externalProvider        String?
   syncedAt                DateTime?
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
-  callLogs      CallLog[]
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+  callLogs                CallLog[]
 
   @@index([orgId, staffId, startsAt, endsAt])
   @@index([customerPhone])
@@ -419,18 +421,25 @@ model RetellConnection {
 }
 
 model CallLog {
-  id            String      @id @default(cuid())
-  orgId         String
-  agentId       String
-  callId        String      @unique
-  startedAt     DateTime
-  endedAt       DateTime?
-  callerPhone   String
-  transcript    String?
-  recordingUrl  String?
-  outcome       CallOutcome
-  appointmentId String?
-  rawJson       Json
+  id               String      @id @default(cuid())
+  orgId            String
+  agentId          String
+  callId           String      @unique
+  retellCallId     String?     @unique
+  businessPhone    String?
+  direction        String      @default("INBOUND")
+  startedAt        DateTime
+  endedAt          DateTime?
+  callerPhone      String
+  transcript       String?
+  recordingUrl     String?
+  outcome          CallOutcome
+  appointmentId    String?
+  rawJson          Json
+  summarySystem    String?
+  summaryAi        String?
+  summaryUpdatedAt DateTime?
+  summaryJobStatus String?
 
   org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
@@ -440,6 +449,34 @@ model CallLog {
   @@index([appointmentId])
 }
 
+model GlobalSettings {
+  id                      String   @id @default("global")
+  globalZapierWebhookUrl  String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+}
+
+model WebhookForwardJob {
+  id             String   @id @default(cuid())
+  provider       String
+  orgId          String
+  retellCallId   String
+  destinationUrl String
+  payload        Json
+  status         String   @default("PENDING")
+  attemptCount   Int      @default(0)
+  nextAttemptAt  DateTime?
+  lastError      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, retellCallId, destinationUrl])
+  @@index([status, nextAttemptAt])
+  @@index([orgId])
+}
+
 /**
  * ────────────────────────────────────────────────
  * EMAIL AI (universal per-org)
@@ -447,79 +484,106 @@ model CallLog {
  */
 
 model EmailAISettings {
-  id                  String        @id @default(cuid())
-  orgId               String        @unique
-  organization        Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  id           String       @id @default(cuid())
+  orgId        String       @unique
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
-  enabled             Boolean       @default(false)
-  googleAccountEmail  String?
-  signature           String?
+  enabled            Boolean @default(false)
+  googleAccountEmail String?
+  signature          String?
 
-  businessName        String        @default("Your business")
-  businessHoursTz     String        @default("Pacific/Auckland")
-  businessHoursJson   Json          @default("{}")
+  businessName      String @default("Your business")
+  businessHoursTz   String @default("Pacific/Auckland")
+  businessHoursJson Json   @default("{}")
 
-  defaultTone         String        @default("friendly, concise, local")
-  instructionPrompt   String        @default("")
+  defaultTone       String @default("friendly, concise, local")
+  instructionPrompt String @default("")
 
   allowedSendersRegex String?
   blockedSendersRegex String?
 
-  autoReplyRulesJson  Json          @default("[]")
-  minConfidenceToSend Float         @default(0.65)
-  humanEscalationTags Json          @default("[]")
+  autoReplyRulesJson  Json  @default("[]")
+  minConfidenceToSend Float @default(0.65)
+  humanEscalationTags Json  @default("[]")
 
   // 🔥 NEW FIELDS TO MATCH FRONTEND
-  autoSendAboveConfidence Boolean   @default(false)
-  model                   String    @default("gpt-5-mini") // or make this an enum if you want
-  logRetentionDays        Int       @default(30)
-  knowledgeBaseJson       Json      @default("{}")
+  autoSendAboveConfidence Boolean @default(false)
+  model                   String  @default("gpt-5-mini") // or make this an enum if you want
+  logRetentionDays        Int     @default(30)
+  knowledgeBaseJson       Json    @default("{}")
 
-  createdAt           DateTime      @default(now())
-  updatedAt           DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum TonePreference {
+  DEFAULT
+  FORMAL
+  CASUAL
+}
+
+model ClientProfile {
+  id                String         @id @default(cuid())
+  orgId             String
+  customerId        String         @unique
+  preferredDays     Json?
+  preferredTimes    Json?
+  lastServiceId     String?
+  tonePreference    TonePreference @default(DEFAULT)
+  notes             String?
+  cancellationCount Int            @default(0)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  customer Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, customerId])
+  @@index([orgId])
 }
 
 model EmailAILog {
-  id             String         @id @default(cuid())
-  orgId          String
-  org            Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  id    String       @id @default(cuid())
+  orgId String
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   // Gmail identifiers
-  gmailThreadId  String?
-  gmailMsgId     String?        // message id; unique per org when present
+  gmailThreadId String?
+  gmailMsgId    String? // message id; unique per org when present
 
   // Flow metadata
-  direction      String         // "inbound" | "outbound" | "draft"
-  classification String?        // "inquiry" | "job" | "support" | "other"
+  direction      String // "inbound" | "outbound" | "draft"
+  classification String? // "inquiry" | "job" | "support" | "other"
   confidence     Float?
-  action         String?        // "auto_sent" | "queued_for_review" | "skipped_blocked" | "escalated"
-  reason         String?        // why action happened
+  action         String? // "auto_sent" | "queued_for_review" | "skipped_blocked" | "escalated"
+  reason         String? // why action happened
 
   // Content preview
-  subject        String?
-  snippet        String?
+  subject String?
+  snippet String?
 
   // Exact time the email hit Gmail (from Gmail internalDate / Date header)
-  receivedAt     DateTime?      // used for newest-first ordering
+  receivedAt DateTime? // used for newest-first ordering
 
   // Bag of useful extras (draftId, suggested, threadPeek, emailEpochMs, etc.)
-  rawMeta        Json?
+  rawMeta Json?
 
   // Row creation timestamp (when we logged it)
-  createdAt      DateTime       @default(now())
+  createdAt DateTime @default(now())
 
-  @@unique([orgId, gmailMsgId])            // idempotency (NULL gmailMsgId allowed)
-  @@index([orgId, receivedAt])             // fast "latest first" per org
-  @@index([orgId, createdAt])              // fallback ordering
+  @@unique([orgId, gmailMsgId]) // idempotency (NULL gmailMsgId allowed)
+  @@index([orgId, receivedAt]) // fast "latest first" per org
+  @@index([orgId, createdAt]) // fallback ordering
   @@index([gmailThreadId])
-  @@index([orgId, action, receivedAt])     // review queue filters
+  @@index([orgId, action, receivedAt]) // review queue filters
 }
+
 model SignupAllowlist {
-  id        String   @id @default(cuid())
-  email     String   @unique
+  id        String    @id @default(cuid())
+  email     String    @unique
   plan      String
   note      String?
-  used      Boolean  @default(false)
-  createdAt DateTime @default(now())
+  used      Boolean   @default(false)
+  createdAt DateTime  @default(now())
   usedAt    DateTime?
 }

@@ -1,3 +1,4 @@
+// FILE MAP: app layout at app/layout.tsx; Retell webhook at app/api/webhooks/voice/[provider]/[orgId]/route.ts.
 "use client";
 
 import Link from "next/link";
@@ -36,6 +37,11 @@ const Icon = {
   chart: (p: React.SVGProps<SVGSVGElement>) => (
     <svg viewBox="0 0 24 24" {...p}>
       <path d="M4 19h16v2H2V3h2v16Zm4-6h2v4H8v-4Zm5-6h2v10h-2V7Zm5 3h2v7h-2v-7Z" />
+    </svg>
+  ),
+  timeline: (p: React.SVGProps<SVGSVGElement>) => (
+    <svg viewBox="0 0 24 24" {...p}>
+      <path d="M6 2h2v4H6V2Zm9 0h2v4h-2V2ZM3 6h18v3H3V6Zm2 5h4v2H5v-2Zm0 4h6v2H5v-2Zm9-4h5v2h-5v-2Zm0 4h3v2h-3v-2Z" />
     </svg>
   ),
   staff: (p: React.SVGProps<SVGSVGElement>) => (
@@ -86,8 +92,10 @@ type NavGroup = {
 
 const CORE: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: Icon.dashboard },
+  { label: "Impact", href: "/dashboard/impact", icon: Icon.chart },
   { label: "Calendar", href: "/calendar", icon: Icon.calendar },
   { label: "Clients", href: "/clients", icon: Icon.users },
+  { label: "Timeline", href: "/timeline", icon: Icon.timeline },
   { label: "Inbox", href: "/email-ai", icon: Icon.inbox },
   { label: "Messages", href: "/messages", icon: Icon.messages },
   { label: "Analytics", href: "/analytics/calls", icon: Icon.chart },
@@ -114,6 +122,7 @@ function useReviewQueueCount() {
 
   React.useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
 
     const readCountFromJson = (j: unknown): number | null => {
       if (!j || typeof j !== "object") return null;
@@ -126,7 +135,7 @@ function useReviewQueueCount() {
 
     async function load() {
       try {
-        const res = await fetch("/api/email-ai/stats", { cache: "no-store" });
+        const res = await fetch("/api/email-ai/stats", { cache: "no-store", signal: controller.signal });
         if (!res.ok) return;
         const j = await res.json();
         const n = readCountFromJson(j);
@@ -140,6 +149,7 @@ function useReviewQueueCount() {
     const timer = setInterval(load, 30_000);
     return () => {
       cancelled = true;
+      controller.abort();
       clearInterval(timer);
     };
   }, []);
@@ -167,7 +177,7 @@ function NavLink({
         className={cn(
           "group relative flex items-center gap-3 rounded-xl px-3 py-2 text-sm outline-none transition",
           "focus-visible:ring-2 focus-visible:ring-emerald-400/70",
-          "text-zinc-500 hover:bg-white/5 hover:text-white"
+          "text-zinc-500 hover:bg-zinc-200/60 hover:text-zinc-900"
         )}
       >
         <span
@@ -197,7 +207,7 @@ function NavLink({
         className={cn(
           "group relative flex items-center gap-3 rounded-xl px-3 py-2 text-sm outline-none transition",
           "focus-visible:ring-2 focus-visible:ring-emerald-400/70",
-          "text-zinc-300 hover:bg-white/5 hover:text-white"
+          "text-zinc-700 hover:bg-zinc-200/60 hover:text-zinc-900"
         )}
       >
         <span
@@ -215,25 +225,26 @@ function NavLink({
       onClick={onNavigate}
       aria-current={active ? "page" : undefined}
       title={collapsed ? item.label : undefined}
-      className={cn(
-        "group relative flex items-center gap-3 rounded-xl px-3 py-2 text-sm outline-none transition",
-        "focus-visible:ring-2 focus-visible:ring-emerald-400/70",
-        active
-          ? "bg-white/10 text-white"
-          : "text-zinc-300 hover:bg-white/5 hover:text-white"
-      )}
-    >
+        className={cn(
+          "group relative flex items-center gap-3 rounded-xl px-3 py-2 text-sm outline-none transition",
+          "focus-visible:ring-2 focus-visible:ring-emerald-400/70",
+          active
+          ? "bg-white text-zinc-900 shadow-sm"
+          : "text-zinc-700 hover:bg-zinc-200/60 hover:text-zinc-900"
+        )}
+      >
       <span
         aria-hidden
         className={cn(
           "absolute left-0 top-1/2 -translate-y-1/2 h-5 w-1 rounded-r transition",
-          active ? "bg-emerald-400" : "bg-transparent group-hover:bg-emerald-400/40"
+          active ? "bg-transparent" : "bg-transparent group-hover:bg-zinc-300"
         )}
+        style={active ? { backgroundColor: "var(--brand-primary)" } : undefined}
       />
       <item.icon className="h-4 w-4 shrink-0 fill-current opacity-90" aria-hidden />
       {!collapsed && <span className="truncate">{item.label}</span>}
       {!collapsed && item.badge ? (
-        <span className="ml-auto inline-flex min-w-[18px] items-center justify-center rounded-full bg-emerald-500/20 px-1.5 text-[10px] font-semibold text-emerald-200">
+        <span className="ml-auto inline-flex min-w-[18px] items-center justify-center rounded-full bg-emerald-500/15 px-1.5 text-[10px] font-semibold text-emerald-700">
           {item.badge}
         </span>
       ) : null}
@@ -282,12 +293,20 @@ export default function AppSidebar({
           const locked = featureFlags ? !featureFlags.messagesHub : false;
           return { ...item, locked };
         }
+        if (item.href === "/timeline") {
+          const locked = featureFlags ? !featureFlags.dashboards : false;
+          return { ...item, locked };
+        }
         if (item.href === "/calendar") {
           const locked = featureFlags ? !featureFlags.calendar : false;
           return { ...item, locked };
         }
+        if (item.href === "/dashboard/impact") {
+          const locked = featureFlags ? !featureFlags.dashboards : false;
+          return { ...item, locked };
+        }
         if (item.href === "/analytics/calls") {
-          const locked = featureFlags ? !featureFlags.analytics : false;
+          const locked = featureFlags ? !featureFlags.analytics || !featureFlags.callsInbox : false;
           return { ...item, locked };
         }
         return item;
@@ -325,7 +344,7 @@ export default function AppSidebar({
   return (
     <aside
       className={cn(
-        "flex h-full flex-col border-r border-white/10 bg-gradient-to-b from-zinc-950 via-zinc-950 to-zinc-900 text-white",
+        "flex h-full flex-col border-r border-zinc-200/60 bg-zinc-50 text-zinc-900",
         collapsed ? "w-[72px]" : "w-72"
       )}
       aria-label="Sidebar navigation"
@@ -340,14 +359,14 @@ export default function AppSidebar({
           )}
           title={collapsed ? "Aroha Bookings" : undefined}
         >
-          <BrandLogo
-            branding={branding}
-            showWordmark={!collapsed}
-            variant="dark"
-            wordmarkClassName="text-white/90"
-            titleClassName="text-white"
-            subtitleClassName="text-white/60"
-          />
+          <div className="rounded-xl border border-zinc-200/70 bg-white px-3 py-3 shadow-sm">
+            <BrandLogo
+              branding={branding}
+              showWordmark={false}
+              chrome={collapsed ? "collapsed" : "sidebar"}
+              className={collapsed ? "max-w-[80px]" : "max-w-[320px]"}
+            />
+          </div>
         </Link>
 
         {showCollapse && (
@@ -355,7 +374,7 @@ export default function AppSidebar({
             type="button"
             onClick={onCollapseToggle}
             className={cn(
-              "ml-auto rounded-lg p-2 text-zinc-300 hover:bg-white/5 hover:text-white outline-none",
+              "ml-auto rounded-lg p-2 text-zinc-500 hover:bg-zinc-200/60 hover:text-zinc-900 outline-none",
               "focus-visible:ring-2 focus-visible:ring-emerald-400/70",
               collapsed ? "absolute right-3 top-4" : ""
             )}
@@ -371,7 +390,7 @@ export default function AppSidebar({
         {groups.map((group) => (
           <div key={group.title} className="mb-4">
             {!collapsed && (
-              <div className="px-2 pb-2 pt-3 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+              <div className="px-2 pb-2 pt-3 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
                 {group.title}
               </div>
             )}
@@ -390,13 +409,13 @@ export default function AppSidebar({
         ))}
       </nav>
 
-      <div className="border-t border-white/10 p-3">
+      <div className="border-t border-zinc-200/60 p-3">
         <Link
           href="/logout"
           onClick={onNavigate}
           className={cn(
             "flex items-center gap-3 rounded-lg px-3 py-2 text-sm outline-none transition",
-            "text-zinc-300 hover:bg-white/5 hover:text-white focus-visible:ring-2 focus-visible:ring-emerald-400/70"
+            "text-zinc-700 hover:bg-zinc-200/60 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-emerald-400/70"
           )}
           title={collapsed ? "Log out" : undefined}
         >
@@ -408,7 +427,7 @@ export default function AppSidebar({
         {!collapsed && (
           <Link
             href="/#support"
-            className="mt-2 block rounded-lg px-3 py-2 text-xs text-zinc-500 hover:bg-white/5 hover:text-white outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70"
+            className="mt-2 block rounded-lg px-3 py-2 text-xs text-zinc-500 hover:bg-zinc-200/60 hover:text-zinc-900 outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70"
             onClick={onNavigate}
           >
             Need help? Contact support

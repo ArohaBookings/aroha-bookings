@@ -5,6 +5,7 @@ import React from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { Prisma } from "@prisma/client";
 import { Badge, Button, Card, EmptyState, Input, Select } from "@/components/ui";
+import { formatCallerPhone } from "@/lib/phone/format";
 
 export type CallRow = {
   id: string;
@@ -13,6 +14,7 @@ export type CallRow = {
   startedAt: string;
   endedAt: string | null;
   callerPhone: string;
+  businessPhone?: string | null;
   transcript: string | null;
   recordingUrl: string | null;
   outcome: string;
@@ -168,6 +170,23 @@ export default function CallsClient({
   const [drawerQuery, setDrawerQuery] = React.useState("");
   const [matchIndex, setMatchIndex] = React.useState(0);
   const transcriptRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+    async function syncCalls() {
+      try {
+        await fetch("/api/org/calls/sync", { method: "POST", signal: controller.signal });
+      } catch {
+        // ignore
+      }
+    }
+    syncCalls();
+    const timer = window.setInterval(syncCalls, 5 * 60 * 1000);
+    return () => {
+      controller.abort();
+      clearInterval(timer);
+    };
+  }, []);
 
   React.useEffect(() => {
     setFrom(filters.from);
@@ -431,7 +450,9 @@ export default function CallsClient({
                   </div>
                   <span className="text-zinc-700">{duration !== null ? `${duration}m` : "—"}</span>
                   <div className="flex flex-col">
-                    <span className="font-medium text-zinc-900">{call.callerPhone}</span>
+                    <span className="font-medium text-zinc-900">
+                      {formatCallerPhone(call.callerPhone, call.businessPhone)}
+                    </span>
                     <span className="text-xs text-zinc-500">{call.callId.slice(0, 10)}...</span>
                   </div>
                   <span className="text-zinc-700">{call.agentId}</span>
@@ -513,7 +534,9 @@ export default function CallsClient({
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Caller</p>
-                      <p className="mt-1 text-lg font-semibold text-zinc-900">{selected.callerPhone}</p>
+                      <p className="mt-1 text-lg font-semibold text-zinc-900">
+                        {formatCallerPhone(selected.callerPhone, selected.businessPhone)}
+                      </p>
                     </div>
                     <button
                       type="button"

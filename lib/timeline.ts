@@ -1,4 +1,8 @@
 import { prisma } from "@/lib/db";
+import { normalizePhone } from "@/lib/retell/phone";
+import { formatCallerPhone } from "@/lib/phone/format";
+import { DEMO_MESSAGES } from "@/lib/messages/demo";
+import { resolveBookingHolds } from "@/lib/booking/holds";
 
 export type TimelineEvent = {
   type: string;
@@ -102,9 +106,11 @@ export async function buildCustomerTimeline(input: {
   phone?: string | null;
   email?: string | null;
   customerId?: string | null;
+  demoMode?: boolean;
 }) {
   const phone = (input.phone || "").trim();
   const email = (input.email || "").trim().toLowerCase();
+  const normalizedPhone = phone ? normalizePhone(phone) : "";
 
   const customer =
     input.customerId ||
@@ -159,13 +165,14 @@ export async function buildCustomerTimeline(input: {
     }),
     phone
       ? prisma.callLog.findMany({
-          where: { orgId: input.orgId, callerPhone: phone },
-          select: {
-            id: true,
-            startedAt: true,
-            outcome: true,
-            appointmentId: true,
-          },
+        where: { orgId: input.orgId, callerPhone: phone },
+        select: {
+          id: true,
+          startedAt: true,
+          outcome: true,
+          appointmentId: true,
+          businessPhone: true,
+        },
           orderBy: { startedAt: "desc" },
           take: 40,
         })
@@ -225,11 +232,28 @@ export async function buildCustomerTimeline(input: {
     const from = String(raw?.from || "").toLowerCase();
     const replyTo = String(raw?.replyTo || "").toLowerCase();
     const to = String(raw?.to || "").toLowerCase();
-    return from.includes(email) || replyTo.includes(email) || to.includes(email);
+    if (from.includes(email) || replyTo.includes(email) || to.includes(email)) return true;
+    try {
+      const text = JSON.stringify(raw || {}).toLowerCase();
+      return text.includes(email);
+    } catch {
+      return false;
+    }
+  };
+
+  const matchesPhone = (raw: any) => {
+    if (!normalizedPhone) return false;
+    try {
+      const digits = normalizedPhone.replace(/\D/g, "");
+      const text = JSON.stringify(raw || {}).replace(/\D/g, "");
+      return digits.length >= 7 && text.includes(digits);
+    } catch {
+      return false;
+    }
   };
 
   emailLogs.forEach((log) => {
-    if (!matchesEmail(log.rawMeta)) return;
+    if ((email || normalizedPhone) && !matchesEmail(log.rawMeta) && !matchesPhone(log.rawMeta)) return;
     const label = log.action ? ` (${log.action.replace(/_/g, " ")})` : "";
     events.push({
       type: log.direction === "outbound" ? "EMAIL_SENT" : log.direction === "draft" ? "EMAIL_DRAFT" : "EMAIL_INBOUND",
@@ -237,6 +261,21 @@ export async function buildCustomerTimeline(input: {
       detail: `${log.subject || "Email"}${label}`,
     });
   });
+
+  if (input.demoMode) {
+    const demoMatches = DEMO_MESSAGES.filter((m) => {
+      if (!email && !normalizedPhone) return true;
+      const handle = m.fromHandle.toLowerCase();
+      return (email && handle.includes(email)) || (normalizedPhone && handle.includes(normalizedPhone.replace(/\D/g, "")));
+    });
+    demoMatches.forEach((msg) => {
+      events.push({
+        type: "MESSAGE",
+        at: msg.receivedAt,
+        detail: `${msg.channel.toUpperCase()}: ${msg.preview}`,
+      });
+    });
+  }
 
   events.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
 
@@ -249,4 +288,118 @@ export async function buildCustomerTimeline(input: {
     },
     events,
   } satisfies CustomerTimeline;
+}
+
+export async function buildOrgTimeline(input: {
+  orgId: string;
+  from?: Date | null;
+  to?: Date | null;
+  demoMode?: boolean;
+  page?: number;
+  limit?: number;
+}) {
+  const from = input.from || null;
+  const to = input.to || null;
+  const page = Math.max(1, input.page || 1);
+  const limit = Math.max(20, Math.min(200, input.limit || 120));
+  const skip = (page - 1) * limit;
+
+  const [calls, appointments, emailLogs, orgSettings, totalBookings] = await Promise.all([
+    prisma.callLog.findMany({
+      where: {
+        orgId: input.orgId,
+        ...(from && to ? { startedAt: { gte: from, lte: to } } : {}),
+      },
+      select: { startedAt: true, callerPhone: true, businessPhone: true, outcome: true },
+      orderBy: { startedAt: "desc" },
+      take: limit,
+    }),
+    prisma.appointment.findMany({
+      where: {
+        orgId: input.orgId,
+        ...(from && to ? { startsAt: { gte: from, lte: to } } : {}),
+      },
+      select: {
+        startsAt: true,
+        status: true,
+        service: { select: { name: true } },
+        staff: { select: { name: true } },
+        customerName: true,
+      },
+      orderBy: { startsAt: "desc" },
+      take: limit,
+      skip,
+    }),
+    prisma.emailAILog.findMany({
+      where: {
+        orgId: input.orgId,
+        ...(from && to ? { createdAt: { gte: from, lte: to } } : {}),
+      },
+      select: { createdAt: true, receivedAt: true, subject: true, action: true, direction: true },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    }),
+    prisma.orgSettings.findUnique({
+      where: { orgId: input.orgId },
+      select: { data: true },
+    }),
+    prisma.appointment.count({
+      where: {
+        orgId: input.orgId,
+        ...(from && to ? { startsAt: { gte: from, lte: to } } : {}),
+      },
+    }),
+  ]);
+
+  const events: TimelineEvent[] = [];
+
+  calls.forEach((call) => {
+    events.push({
+      type: "CALL",
+      at: call.startedAt.toISOString(),
+      detail: `Call from ${formatCallerPhone(call.callerPhone, call.businessPhone)} (${call.outcome || "unknown"}).`,
+    });
+  });
+
+  appointments.forEach((appt) => {
+    events.push({
+      type: "BOOKING",
+      at: appt.startsAt.toISOString(),
+      detail: `${appt.customerName} · ${appt.service?.name ?? "Service"} with ${
+        appt.staff?.name ?? "staff"
+      } (${appt.status || "SCHEDULED"}).`,
+    });
+  });
+
+  emailLogs.forEach((log) => {
+    const label = log.action ? ` (${log.action.replace(/_/g, " ")})` : "";
+    events.push({
+      type: log.direction === "outbound" ? "EMAIL_SENT" : log.direction === "draft" ? "EMAIL_DRAFT" : "EMAIL_INBOUND",
+      at: (log.receivedAt || log.createdAt).toISOString(),
+      detail: `${log.subject || "Email"}${label}`,
+    });
+  });
+
+  const data = (orgSettings?.data as Record<string, unknown>) || {};
+  const holds = resolveBookingHolds(data);
+  holds.forEach((hold) => {
+    events.push({
+      type: "HOLD",
+      at: hold.createdAt,
+      detail: `Hold created for ${new Date(hold.start).toLocaleString()}.`,
+    });
+  });
+
+  if (input.demoMode) {
+    DEMO_MESSAGES.forEach((msg) => {
+      events.push({
+        type: "MESSAGE",
+        at: msg.receivedAt,
+        detail: `${msg.channel.toUpperCase()}: ${msg.preview}`,
+      });
+    });
+  }
+
+  events.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+  return { events, page, limit, totalBookings };
 }

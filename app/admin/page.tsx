@@ -1,10 +1,10 @@
 // app/admin/page.tsx
-import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
 import VoiceProvidersPanel from "./VoiceProvidersPanel";
 import OrgBookingPanel from "./OrgBookingPanel";
 import OrgMasterPanel from "./OrgMasterPanel";
+import IntegrationsPanel from "./IntegrationsPanel";
 import { Plan } from "@prisma/client";
 import ConfirmActionButton from "@/components/ConfirmActionButton";
 import { Button, Card } from "@/components/ui";
@@ -203,7 +203,14 @@ export async function resetOrgData(formData: FormData) {
 export default async function AdminPage() {
   const gate = await requireOrgOrPurchase();
   if (!gate.isSuperAdmin) {
-    redirect("/unauthorized");
+    return (
+      <Card className="p-6">
+        <h1 className="text-xl font-semibold">Forbidden</h1>
+        <p className="mt-2 text-sm text-zinc-600">
+          You do not have access to the Super Admin panel.
+        </p>
+      </Card>
+    );
   }
 
   // Top-level stats
@@ -355,6 +362,7 @@ export default async function AdminPage() {
         </div>
       </section>
 
+      <IntegrationsPanel />
       <OrgMasterPanel orgs={orgs.map((o) => ({ id: o.id, name: o.name }))} />
       <VoiceProvidersPanel orgs={orgs.map((o) => ({ id: o.id, name: o.name }))} />
       <OrgBookingPanel orgs={orgs.map((o) => ({ id: o.id, name: o.name }))} />

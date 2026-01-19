@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { canAccessSuperAdminByEmail } from "@/lib/roles";
 import { getAvailability } from "@/lib/availability/index";
 
 export const runtime = "nodejs";
@@ -15,20 +16,12 @@ function json(data: unknown, status = 200) {
   });
 }
 
-function isSuperadmin(email?: string | null): boolean {
-  if (!email) return false;
-  const list = (process.env.SUPERADMINS || "")
-    .split(",")
-    .map((x) => x.trim().toLowerCase())
-    .filter(Boolean);
-  return list.includes(email.trim().toLowerCase());
-}
-
 async function requireSuperadmin() {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email || null;
   if (!email) return { ok: false, error: "Not signed in", status: 401 } as const;
-  if (!isSuperadmin(email)) return { ok: false, error: "Not authorized", status: 403 } as const;
+  const allowed = await canAccessSuperAdminByEmail(email);
+  if (!allowed) return { ok: false, error: "Not authorized", status: 403 } as const;
   return { ok: true } as const;
 }
 

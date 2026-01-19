@@ -4,6 +4,7 @@
 import { useState, useCallback, Suspense, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
+import BrandLogo from "@/components/BrandLogo";
 
 export default function LoginPage() {
   return (
@@ -85,20 +86,20 @@ function LoginInner() {
   );
 
   return (
-    <main className="w-full max-w-sm mx-auto pt-10">
-      <h1 className="text-2xl font-bold text-center">Welcome back</h1>
-      <p className="mt-2 text-center text-sm text-zinc-600">
-        Sign in to continue
-      </p>
+    <main className="min-h-screen bg-gradient-to-b from-zinc-100 via-white to-zinc-100 px-4 py-12">
+      <div className="mx-auto flex w-full max-w-md flex-col items-center">
+        <BrandLogo mode="full" showWordmark={false} showWordmarkText={false} size={44} />
+        <h1 className="mt-6 text-2xl font-semibold tracking-tight text-zinc-900">Welcome back</h1>
+        <p className="mt-2 text-center text-sm text-zinc-600">Sign in to continue to your workspace.</p>
 
-      <form
-        onSubmit={onSubmit}
-        className="mt-6 grid gap-4"
-        autoComplete="on"
-        noValidate
-      >
+        <form
+          onSubmit={onSubmit}
+          className="mt-6 w-full rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm"
+          autoComplete="on"
+          noValidate
+        >
         {/* Email */}
-        <div>
+        <div className="mb-4">
           <label htmlFor="email" className="block text-sm font-medium mb-1">
             Email
           </label>
@@ -117,14 +118,14 @@ function LoginInner() {
         </div>
 
         {/* Password */}
-        <div>
+        <div className="mb-4">
           <div className="flex items-center justify-between mb-1">
             <label htmlFor="password" className="text-sm font-medium">
               Password
             </label>
             <a
               href="/forgot-password"
-              className="text-xs text-blue-600 hover:underline"
+              className="text-xs text-zinc-600 hover:text-zinc-900"
             >
               Forgot?
             </a>
@@ -154,7 +155,7 @@ function LoginInner() {
         </div>
 
         {/* Remember me */}
-        <label className="inline-flex items-center gap-2 text-sm">
+        <label className="inline-flex items-center gap-2 text-sm text-zinc-600">
           <input
             type="checkbox"
             checked={remember}
@@ -168,7 +169,7 @@ function LoginInner() {
         <button
           type="submit"
           disabled={loading}
-          className="w-full rounded-lg bg-black py-2.5 text-white hover:bg-zinc-800 disabled:opacity-60"
+          className="mt-4 w-full rounded-lg bg-zinc-900 py-2.5 text-white hover:bg-zinc-800 disabled:opacity-60"
         >
           {loading ? "Signing in…" : "Sign in"}
         </button>
@@ -179,17 +180,22 @@ function LoginInner() {
             {error}
           </p>
         )}
-      </form>
+        </form>
 
-      <div className="mt-4 text-center text-sm">
-        <a href="/register" className="text-blue-600 underline">
-          Don’t have an account? Register
-        </a>
+        <div className="mt-4 text-center text-sm">
+          <a href="/register" className="text-zinc-700 underline hover:text-zinc-900">
+            Don’t have an account? Register
+          </a>
+        </div>
+
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-4 text-xs text-zinc-500">
+          <a href="/terms" className="hover:text-zinc-800">Terms</a>
+          <a href="/privacy" className="hover:text-zinc-800">Privacy</a>
+          <a href="https://instagram.com/aroha_calls" target="_blank" rel="noreferrer" className="hover:text-zinc-800">
+            Instagram
+          </a>
+        </div>
       </div>
-
-      <p className="mt-4 text-center text-xs text-zinc-500">
-        By signing in, you agree to our Terms and Privacy Policy.
-      </p>
     </main>
   );
 }

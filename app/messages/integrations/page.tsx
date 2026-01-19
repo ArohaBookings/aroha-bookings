@@ -52,7 +52,7 @@ export default function MessagesIntegrationsPage() {
         const res = await fetch("/api/messages/integrations", { cache: "no-store" });
         const j = await res.json();
         if (!cancelled && !j?.ok) {
-          setEntitlementError(j?.error || "Messages Hub is disabled.");
+          setEntitlementError(j?.error || "Messages Hub is not included in your plan.");
           return;
         }
         if (!cancelled && j?.ok) {

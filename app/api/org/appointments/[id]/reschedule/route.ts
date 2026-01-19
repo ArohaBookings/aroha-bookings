@@ -25,9 +25,10 @@ function sameOrgDay(a: Date, b: Date, tz: string): boolean {
   return fmt.format(a) === fmt.format(b);
 }
 
-export async function POST(req: Request, ctx: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireStaffContext();
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+  const { id } = await params;
 
   const body = (await req.json().catch(() => ({}))) as { startISO?: string };
   const startISO = (body.startISO || "").trim();
@@ -41,7 +42,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
   }
 
   const appt = await prisma.appointment.findUnique({
-    where: { id: ctx.params.id },
+    where: { id },
     select: {
       id: true,
       orgId: true,

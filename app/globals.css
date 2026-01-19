@@ -1,3 +1,4 @@
+/* FILE MAP: app layout at app/layout.tsx; Retell webhook at app/api/webhooks/voice/[provider]/[orgId]/route.ts. */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -5,7 +6,7 @@
 /* HARD-SET the app to white bg + black text everywhere */
 @layer base {
   html, body {
-    @apply bg-white text-black antialiased;
+    @apply bg-white text-black antialiased overflow-x-hidden;
   }
 
   /* Form controls default to black text + black borders */

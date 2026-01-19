@@ -28,7 +28,7 @@ function json(data: unknown, status = 200) {
   });
 }
 
-export async function POST(req: Request, ctx: { params: { token: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ token: string }> }) {
   const ip =
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     (req as { ip?: string }).ip ||
@@ -50,7 +50,7 @@ export async function POST(req: Request, ctx: { params: { token: string } }) {
     return json({ ok: false, error: "Missing start time" }, 400);
   }
 
-  const token = ctx.params.token || "";
+  const { token } = await params;
   const managed = await getManageContext(token);
   if (!managed.ok) {
     return json({ ok: false, error: managed.error }, 403);

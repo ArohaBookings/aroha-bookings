@@ -266,6 +266,12 @@ function hhmmLE(a: string, b: string) {
   return am <= bm;
 }
 
+function nullIfBlank(value?: string | null) {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 /* ───────────────────────────────────────────────────────────────
    LOAD
    ─────────────────────────────────────────────────────────────── */
@@ -611,7 +617,7 @@ export async function saveAllSettings(payload: SettingsPayload): Promise<SaveRes
               data: {
                 orgId: org.id,
                 name: st.name,
-                email: st.email ?? null,
+                email: nullIfBlank(st.email),
                 active: st.active,
                 colorHex: st.colorHex ?? null,
               },
@@ -622,7 +628,7 @@ export async function saveAllSettings(payload: SettingsPayload): Promise<SaveRes
           } else {
             const needs =
               target.name !== st.name ||
-              target.email !== (st.email ?? null) ||
+              target.email !== nullIfBlank(st.email) ||
               target.active !== st.active ||
               (target.colorHex ?? null) !== (st.colorHex ?? null);
 
@@ -631,7 +637,7 @@ export async function saveAllSettings(payload: SettingsPayload): Promise<SaveRes
                 where: { id: target.id },
                 data: {
                   name: st.name,
-                  email: st.email ?? null,
+                  email: nullIfBlank(st.email),
                   active: st.active,
                   colorHex: st.colorHex ?? null,
                 },

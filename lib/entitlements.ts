@@ -5,6 +5,11 @@ import { authOptions } from "@/lib/auth";
 
 export type EntitlementFeatures = {
   booking: boolean;
+  calls: boolean;
+  callsInbox: boolean;
+  aiReceptionist: boolean;
+  exports: boolean;
+  dashboards: boolean;
   emailAi: boolean;
   messagesHub: boolean;
   calendar: boolean;
@@ -25,6 +30,7 @@ export type EntitlementLimits = {
   bookingsPerMonth: number | null;
   inboxSyncIntervalSec: number;
   messageSyncIntervalSec: number;
+  callsSyncIntervalSec: number;
 };
 
 export type EntitlementChannels = {
@@ -44,6 +50,7 @@ export type GlobalControls = {
   disableAutoSendAll?: boolean;
   disableMessagesHubAll?: boolean;
   disableEmailAIAll?: boolean;
+  disableAiSummariesAll?: boolean;
 };
 
 const DEFAULT_AUTOMATION: EntitlementAutomation = {
@@ -57,6 +64,7 @@ const DEFAULT_AUTOMATION: EntitlementAutomation = {
 const DEFAULT_LIMITS: Omit<EntitlementLimits, "staffMax" | "bookingsPerMonth"> = {
   inboxSyncIntervalSec: 15,
   messageSyncIntervalSec: 20,
+  callsSyncIntervalSec: 20,
 };
 
 function asBool(value: unknown, fallback: boolean) {
@@ -78,13 +86,20 @@ function asNullableNum(value: unknown, fallback: number | null) {
 
 function normalizeFeatures(input: Partial<EntitlementFeatures>, plan: ReturnType<typeof resolvePlanConfig>): EntitlementFeatures {
   const features = plan.features || {};
+  const callsEnabled = asBool(input.calls, Boolean(features.calls ?? true));
+  const analyticsEnabled = asBool(input.analytics, Boolean(features.analytics ?? true));
   return {
     booking: asBool(input.booking, Boolean(features.booking ?? true)),
+    calls: callsEnabled,
+    callsInbox: asBool(input.callsInbox, analyticsEnabled),
+    aiReceptionist: asBool(input.aiReceptionist, callsEnabled),
+    exports: asBool(input.exports, analyticsEnabled),
+    dashboards: asBool(input.dashboards, analyticsEnabled),
     emailAi: asBool(input.emailAi, Boolean(features.emailAI ?? false)),
     messagesHub: asBool(input.messagesHub, Boolean(features.emailAI ?? true)),
     calendar: asBool(input.calendar, Boolean(features.googleSync ?? true)),
     holds: asBool(input.holds, Boolean(features.emailAI ?? true)),
-    analytics: asBool(input.analytics, Boolean(features.analytics ?? true)),
+    analytics: analyticsEnabled,
   };
 }
 
@@ -104,6 +119,7 @@ function normalizeLimits(input: Partial<EntitlementLimits>, plan: ReturnType<typ
     bookingsPerMonth: asNullableNum(input.bookingsPerMonth, plan.limits.bookingsPerMonth ?? null),
     inboxSyncIntervalSec: asNum(input.inboxSyncIntervalSec, DEFAULT_LIMITS.inboxSyncIntervalSec),
     messageSyncIntervalSec: asNum(input.messageSyncIntervalSec, DEFAULT_LIMITS.messageSyncIntervalSec),
+    callsSyncIntervalSec: asNum(input.callsSyncIntervalSec, DEFAULT_LIMITS.callsSyncIntervalSec),
   };
 }
 
@@ -127,7 +143,12 @@ async function readGlobalControls(): Promise<GlobalControls> {
     disableAutoSendAll: Boolean(controls.disableAutoSendAll),
     disableMessagesHubAll: Boolean(controls.disableMessagesHubAll),
     disableEmailAIAll: Boolean(controls.disableEmailAIAll),
+    disableAiSummariesAll: Boolean(controls.disableAiSummariesAll),
   };
+}
+
+export async function getGlobalControls() {
+  return readGlobalControls();
 }
 
 export async function getOrgEntitlements(orgId: string): Promise<OrgEntitlements> {
@@ -177,6 +198,8 @@ export async function requireOrgFeature(orgId: string, feature: keyof Entitlemen
   }
   return { ok: true, entitlements } as const;
 }
+
+export const requireFeature = requireOrgFeature;
 
 export async function requireSessionOrgFeature(feature: keyof EntitlementFeatures) {
   const session = await getServerSession(authOptions);

@@ -16,6 +16,16 @@ export default async function RegisterPage({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
+  const footerLinks = (
+    <footer className="mt-8 flex flex-wrap items-center justify-center gap-4 text-xs text-zinc-500">
+      <a href="/terms" className="hover:text-zinc-800">Terms</a>
+      <a href="/privacy" className="hover:text-zinc-800">Privacy</a>
+      <a href="https://instagram.com/aroha_calls" target="_blank" rel="noreferrer" className="hover:text-zinc-800">
+        Instagram
+      </a>
+    </footer>
+  );
+
   const params = await searchParams;
 
   // Normalise token from URL
@@ -71,6 +81,7 @@ export default async function RegisterPage({
             </li>
           </ul>
         </section>
+        {footerLinks}
       </div>
     );
   }
@@ -165,6 +176,7 @@ export default async function RegisterPage({
           </a>
           .
         </footer>
+        {footerLinks}
       </div>
     );
   }
@@ -287,6 +299,7 @@ export default async function RegisterPage({
         </a>
         .
       </footer>
+      {footerLinks}
     </div>
   );
 }

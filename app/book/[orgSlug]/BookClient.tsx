@@ -459,7 +459,14 @@ export default function BookClient({
       <header className="border-b border-zinc-200 bg-white/80 backdrop-blur sticky top-0 z-30">
         <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-5">
           <div className="flex items-center gap-3">
-            <BrandLogo branding={branding} showWordmark={false} />
+            <BrandLogo
+              branding={branding}
+              mode="full"
+              showWordmark={false}
+              showWordmarkText={false}
+              size={44}
+              className="max-w-[200px]"
+            />
             <div>
               <h1 className="text-2xl font-semibold text-zinc-900">{org.name}</h1>
               <p className="text-sm text-zinc-600 mt-1">
@@ -983,6 +990,15 @@ export default function BookClient({
         </aside>
       </div>
     </section>
+    <footer className="border-t border-zinc-200 bg-white/80 px-6 py-4 text-xs text-zinc-500">
+      <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-3">
+        <a href="/terms" className="hover:text-zinc-800">Terms</a>
+        <a href="/privacy" className="hover:text-zinc-800">Privacy</a>
+        <a href="https://instagram.com/aroha_calls" target="_blank" rel="noreferrer" className="hover:text-zinc-800">
+          Instagram
+        </a>
+      </div>
+    </footer>
     <div className="sm:hidden fixed bottom-0 left-0 right-0 border-t border-zinc-200 bg-white/90 backdrop-blur px-4 py-3">
       <button
         type="button"

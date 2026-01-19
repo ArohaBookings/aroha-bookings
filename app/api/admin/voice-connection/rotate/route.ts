@@ -3,7 +3,9 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { canAccessSuperAdminByEmail } from "@/lib/roles";
 import { randomBytes } from "crypto";
+import { getOrgEntitlements } from "@/lib/entitlements";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,20 +18,12 @@ function json(data: unknown, status = 200) {
   });
 }
 
-function isSuperadmin(email?: string | null): boolean {
-  if (!email) return false;
-  const list = (process.env.SUPERADMINS || "")
-    .split(",")
-    .map((x) => x.trim().toLowerCase())
-    .filter(Boolean);
-  return list.includes(email.trim().toLowerCase());
-}
-
 async function requireSuperadmin() {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email || null;
   if (!email) return { ok: false, error: "Not signed in", status: 401 } as const;
-  if (!isSuperadmin(email)) return { ok: false, error: "Not authorized", status: 403 } as const;
+  const allowed = await canAccessSuperAdminByEmail(email);
+  if (!allowed) return { ok: false, error: "Not authorized", status: 403 } as const;
   return { ok: true } as const;
 }
 
@@ -57,6 +51,11 @@ export async function POST(req: Request) {
 
   if (provider !== "retell") {
     return json({ ok: false, error: "Unsupported provider" }, 400);
+  }
+
+  const entitlements = await getOrgEntitlements(orgId);
+  if (!entitlements.features.calls && !entitlements.features.aiReceptionist) {
+    return json({ ok: false, error: "AI receptionist is not enabled for this org." }, 403);
   }
 
   const webhookSecret = newSecret();

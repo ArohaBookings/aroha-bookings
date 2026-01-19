@@ -1,9 +1,9 @@
+// FILE MAP: app layout at app/layout.tsx; Retell webhook at app/api/webhooks/voice/[provider]/[orgId]/route.ts.
 // app/api/webhooks/voice/[provider]/[orgId]/route.ts
 import { NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/db";
-import { normalizePhone } from "@/lib/retell/phone";
-import type { Prisma } from "@prisma/client";
+import { parseRetellPayload, touchLastWebhook, upsertRetellCall } from "@/lib/retell/ingest";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,32 +23,6 @@ function rateLimit(ip: string, maxPerMinute = 180) {
   m.count++;
   callsByIp.set(ip, m);
   return m.count <= maxPerMinute;
-}
-
-function firstString(...values: Array<unknown>): string | null {
-  for (const v of values) {
-    if (typeof v === "string" && v.trim()) return v.trim();
-  }
-  return null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseDate(value: unknown): Date | null {
-  if (!value) return null;
-  const d = new Date(value as string);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function mapOutcome(value: unknown): "COMPLETED" | "NO_ANSWER" | "BUSY" | "FAILED" | "CANCELLED" {
-  const normalized = String(value || "").toLowerCase();
-  if (/(no[_\s-]?answer|missed)/.test(normalized)) return "NO_ANSWER";
-  if (/busy/.test(normalized)) return "BUSY";
-  if (/(fail|error|hangup|dropped)/.test(normalized)) return "FAILED";
-  if (/cancel/.test(normalized)) return "CANCELLED";
-  return "COMPLETED";
 }
 
 function parseSignatureHeader(header: string | null): { signatures: string[]; timestamp: string | null } {
@@ -127,26 +101,13 @@ export async function POST(
       return NextResponse.json({ ok: false, error: "Unsupported provider" }, { status: 400 });
     }
 
-    const callObj = isRecord(payload["call"]) ? payload["call"] : null;
-    const agentObj = isRecord(payload["agent"]) ? payload["agent"] : null;
-    const dataObj = isRecord(payload["data"]) ? payload["data"] : null;
-    const metaObj = isRecord(payload["metadata"]) ? payload["metadata"] : null;
-    const customerObj = isRecord(payload["customer"]) ? payload["customer"] : null;
-
-    const agentId =
-      firstString(
-        payload["agent_id"],
-        payload["agentId"],
-        agentObj?.["id"],
-        callObj?.["agent_id"],
-        callObj?.["agentId"]
-      ) || req.headers.get("x-retell-agent-id");
-    if (!agentId) {
+    const parsed = parseRetellPayload(payload, req.headers);
+    if (!parsed?.agentId) {
       return NextResponse.json({ ok: false, error: "Missing agentId" }, { status: 400 });
     }
 
     const connection = await prisma.retellConnection.findFirst({
-      where: { orgId, agentId, active: true },
+      where: { orgId, agentId: parsed.agentId, active: true },
       select: { orgId: true, webhookSecret: true },
     });
     if (!connection) {
@@ -156,171 +117,17 @@ export async function POST(
     const signatureHeader =
       req.headers.get("x-retell-signature") || req.headers.get("retell-signature");
     const tsHeader = req.headers.get("x-retell-timestamp");
-    if (!verifySignature(rawBody, signatureHeader, connection.webhookSecret, tsHeader)) {
+    const signatureOk = verifySignature(rawBody, signatureHeader, connection.webhookSecret, tsHeader);
+    const enforceSignature = Boolean(connection.webhookSecret) && process.env.NODE_ENV === "production";
+    if (!signatureOk && enforceSignature) {
       return NextResponse.json({ ok: false, error: "Invalid signature" }, { status: 401 });
     }
 
-    const callId = firstString(
-      payload["call_id"],
-      payload["callId"],
-      payload["id"],
-      callObj?.["id"],
-      callObj?.["call_id"]
-    );
-    if (!callId) {
+    if (!parsed.callId) {
       return NextResponse.json({ ok: false, error: "Missing callId" }, { status: 400 });
     }
-
-    const startedAt =
-      parseDate(
-        payload["started_at"] ||
-          payload["start_time"] ||
-          payload["startTime"] ||
-          callObj?.["started_at"] ||
-          callObj?.["start_time"]
-      ) || new Date();
-    const endedAt = parseDate(
-      payload["ended_at"] ||
-        payload["end_time"] ||
-        payload["endTime"] ||
-        callObj?.["ended_at"] ||
-        callObj?.["end_time"]
-    );
-
-    const callerPhoneRaw = firstString(
-      payload["caller_phone"],
-      payload["callerPhone"],
-      payload["from_number"],
-      payload["from"],
-      payload["phone"],
-      callObj?.["from_number"],
-      callObj?.["caller_phone"]
-    );
-    const callerPhone = normalizePhone(callerPhoneRaw);
-
-    const transcript = firstString(
-      payload["transcript"],
-      callObj?.["transcript"],
-      callObj?.["summary"]
-    );
-    const recordingUrl = firstString(
-      payload["recording_url"],
-      payload["recordingUrl"],
-      callObj?.["recording_url"]
-    );
-
-    const outcome = mapOutcome(
-      payload["outcome"] || payload["status"] || callObj?.["status"] || callObj?.["outcome"]
-    );
-
-    const appointmentId = firstString(
-      payload["appointmentId"],
-      payload["appointment_id"],
-      payload["bookingId"],
-      payload["booking_id"],
-      dataObj?.["appointmentId"],
-      dataObj?.["bookingId"],
-      metaObj?.["appointmentId"],
-      metaObj?.["bookingId"],
-      metaObj?.["appointment_id"],
-      metaObj?.["booking_id"]
-    );
-
-    const customerName = firstString(
-      payload["caller_name"],
-      payload["callerName"],
-      customerObj?.["name"],
-      payload["customer_name"],
-      payload["customerName"]
-    );
-    const customerEmail = firstString(
-      customerObj?.["email"],
-      payload["customer_email"],
-      payload["customerEmail"]
-    );
-
-    await prisma.$transaction(async (tx) => {
-      let customerId: string | null = null;
-      if (callerPhone) {
-        const existing = await tx.customer.findUnique({
-          where: { orgId_phone: { orgId: connection.orgId, phone: callerPhone } },
-          select: { id: true },
-        });
-        if (existing) {
-          customerId = existing.id;
-          if (customerName || customerEmail) {
-            await tx.customer.update({
-              where: { id: existing.id },
-              data: {
-                name: customerName ?? undefined,
-                email: customerEmail ?? undefined,
-              },
-            });
-          }
-        } else if (customerName) {
-          const created = await tx.customer.create({
-            data: {
-              orgId: connection.orgId,
-              name: customerName,
-              phone: callerPhone,
-              email: customerEmail ?? null,
-            },
-            select: { id: true },
-          });
-          customerId = created.id;
-        }
-      }
-
-      let finalAppointmentId: string | null = appointmentId;
-      if (finalAppointmentId) {
-        const appt = await tx.appointment.findFirst({
-          where: { id: finalAppointmentId, orgId: connection.orgId },
-          select: { id: true, customerId: true },
-        });
-        if (!appt) {
-          finalAppointmentId = null;
-        } else if (customerId && appt.customerId !== customerId) {
-          await tx.appointment.update({
-            where: { id: appt.id },
-            data: {
-              customerId,
-              customerName: customerName ?? undefined,
-              customerPhone: callerPhone || undefined,
-              customerEmail: customerEmail ?? undefined,
-            },
-          });
-        }
-      }
-
-      await tx.callLog.upsert({
-        where: { callId },
-        create: {
-          orgId: connection.orgId,
-          agentId,
-          callId,
-          startedAt,
-          endedAt,
-          callerPhone: callerPhone || "unknown",
-          transcript: transcript ?? null,
-          recordingUrl: recordingUrl ?? null,
-          outcome,
-          appointmentId: finalAppointmentId,
-          rawJson: payload as Prisma.InputJsonValue,
-        },
-        update: {
-          agentId,
-          startedAt,
-          endedAt,
-          callerPhone: callerPhone || "unknown",
-          transcript: transcript ?? null,
-          recordingUrl: recordingUrl ?? null,
-          outcome,
-          appointmentId: finalAppointmentId,
-          rawJson: payload as Prisma.InputJsonValue,
-        },
-      });
-    });
-
+    await upsertRetellCall(connection.orgId, parsed);
+    await touchLastWebhook(connection.orgId);
     return NextResponse.json({ ok: true });
   } catch (e: unknown) {
     console.error("voice.webhook error:", e);

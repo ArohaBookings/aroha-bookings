@@ -1,3 +1,4 @@
+// FILE MAP: app layout at app/layout.tsx; Retell webhook at app/api/webhooks/voice/[provider]/[orgId]/route.ts.
 // app/layout.tsx
 import "./globals.css";
 import React from "react";

@@ -1,5 +1,6 @@
 // lib/retell/auth.ts
 import { prisma } from "@/lib/db";
+import { getOrgEntitlements } from "@/lib/entitlements";
 
 export type RetellContext = {
   org: { id: string; slug: string; timezone: string };
@@ -20,7 +21,11 @@ export async function requireRetellContext(req: Request): Promise<RetellContext>
     throw new Response(JSON.stringify({ error: "Invalid API key" }), { status: 401 });
   }
 
-  // Optional: feature gating by plan, etc.
+  const entitlements = await getOrgEntitlements(apiKey.org.id);
+  if (!entitlements.features.calls && !entitlements.features.aiReceptionist) {
+    throw new Response(JSON.stringify({ error: "AI receptionist not enabled for this org" }), { status: 403 });
+  }
+
   return {
     org: { id: apiKey.org.id, slug: apiKey.org.slug, timezone: apiKey.org.timezone },
   };

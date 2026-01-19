@@ -31,10 +31,16 @@ const NEXTAUTH_URL = req("NEXTAUTH_URL");
 const EMAIL_SERVER = (process.env.EMAIL_SERVER || "").trim();
 const EMAIL_FROM = (process.env.EMAIL_FROM || "").trim();
 
-const SUPERADMINS = (process.env.SUPERADMINS || "")
-  .split(",")
-  .map((e) => e.trim().toLowerCase())
-  .filter(Boolean);
+const SUPERADMINS = [
+  ...(process.env.SUPERADMIN_EMAILS || "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+  ...(process.env.SUPERADMINS || "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+];
 
 const SUPERADMIN_PASSWORD = (process.env.SUPERADMIN_PASSWORD || "").trim();
 

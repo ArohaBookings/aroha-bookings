@@ -1,9 +1,11 @@
+// FILE MAP: app layout at app/layout.tsx; Retell webhook at app/api/webhooks/voice/[provider]/[orgId]/route.ts.
 // lib/requireOrgOrPurchase.ts
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { authOptions } from "@/lib/auth";
+import { canAccessSuperAdminByEmail, isSuperAdminEmail } from "@/lib/roles";
 
 /* ───────────────────────────────────────────────────────────────
    Types
@@ -35,15 +37,7 @@ export type RequireOpts = {
    SUPERADMIN helpers
 ─────────────────────────────────────────────────────────────── */
 
-/** SUPERADMIN list from env: SUPERADMINS="you@domain.com,admin@company.com" */
-function isSuperAdminEmail(email?: string | null): boolean {
-  if (!email) return false;
-  const list = (process.env.SUPERADMINS || "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  return list.includes(email.toLowerCase());
-}
+/** SUPERADMIN list from env: SUPERADMIN_EMAILS or SUPERADMINS */
 
 function toSlug(base: string): string {
   const s = base
@@ -93,8 +87,8 @@ async function ensureSuperadminOrg(email: string) {
     // 2) Ensure user
     const user = await tx.user.upsert({
       where: { email },
-      update: {},
-      create: { email, name: "Superadmin" },
+      update: { role: "SUPERADMIN" },
+      create: { email, name: "Superadmin", role: "SUPERADMIN" },
     });
 
     // 3) Ensure Owner membership
@@ -159,7 +153,7 @@ export async function requireOrgOrPurchase(opts: RequireOpts = {}): Promise<Requ
 
   if (membership?.org) {
     return {
-      isSuperAdmin: false,
+      isSuperAdmin: await canAccessSuperAdminByEmail(email),
       org: { id: membership.org.id, name: membership.org.name, slug: membership.org.slug },
       membershipId: membership.id,
       purchaseToken: null,
@@ -189,7 +183,7 @@ export async function requireOrgOrPurchase(opts: RequireOpts = {}): Promise<Requ
   // 5) Still no org/purchase: optionally allow (for routes like /dashboard)
   if (allowWithoutOrg) {
     return {
-      isSuperAdmin: false,
+      isSuperAdmin: await canAccessSuperAdminByEmail(email),
       org: null,
       membershipId: null,
       purchaseToken: null,

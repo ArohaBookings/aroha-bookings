@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { getOrgEntitlements, type OrgEntitlements } from "@/lib/entitlements";
+import { canAccessSuperAdminByEmail } from "@/lib/roles";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,20 +16,12 @@ function json(data: unknown, status = 200) {
   });
 }
 
-function isSuperadmin(email?: string | null): boolean {
-  if (!email) return false;
-  const list = (process.env.SUPERADMINS || "")
-    .split(",")
-    .map((x) => x.trim().toLowerCase())
-    .filter(Boolean);
-  return list.includes(email.trim().toLowerCase());
-}
-
 async function requireSuperadmin() {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email || null;
   if (!email) return { ok: false, error: "Not signed in", status: 401 } as const;
-  if (!isSuperadmin(email)) return { ok: false, error: "Not authorized", status: 403 } as const;
+  const allowed = await canAccessSuperAdminByEmail(email);
+  if (!allowed) return { ok: false, error: "Not authorized", status: 403 } as const;
   return { ok: true } as const;
 }
 
@@ -36,6 +29,11 @@ function normalizeEntitlements(payload: Partial<OrgEntitlements>, defaults: OrgE
   return {
     features: {
       booking: payload.features?.booking ?? defaults.features.booking,
+      calls: payload.features?.calls ?? defaults.features.calls,
+      callsInbox: payload.features?.callsInbox ?? defaults.features.callsInbox,
+      aiReceptionist: payload.features?.aiReceptionist ?? defaults.features.aiReceptionist,
+      exports: payload.features?.exports ?? defaults.features.exports,
+      dashboards: payload.features?.dashboards ?? defaults.features.dashboards,
       emailAi: payload.features?.emailAi ?? defaults.features.emailAi,
       messagesHub: payload.features?.messagesHub ?? defaults.features.messagesHub,
       calendar: payload.features?.calendar ?? defaults.features.calendar,
@@ -55,6 +53,7 @@ function normalizeEntitlements(payload: Partial<OrgEntitlements>, defaults: OrgE
       bookingsPerMonth: payload.limits?.bookingsPerMonth ?? defaults.limits.bookingsPerMonth,
       inboxSyncIntervalSec: payload.limits?.inboxSyncIntervalSec ?? defaults.limits.inboxSyncIntervalSec,
       messageSyncIntervalSec: payload.limits?.messageSyncIntervalSec ?? defaults.limits.messageSyncIntervalSec,
+      callsSyncIntervalSec: payload.limits?.callsSyncIntervalSec ?? defaults.limits.callsSyncIntervalSec,
     },
     channels: {
       whatsapp: { enabled: payload.channels?.whatsapp?.enabled ?? defaults.channels.whatsapp.enabled },

@@ -231,11 +231,43 @@ function useConfirmDiscard(dirty: boolean) {
   }, [dirty]);
 }
 
+function useToast() {
+  const [toast, setToast] = useState<{ message: string; variant: "info" | "success" | "error" } | null>(
+    null
+  );
+  const timerRef = useRef<number | null>(null);
+
+  const show = (message: string, variant: "info" | "success" | "error" = "info") => {
+    setToast({ message, variant });
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => setToast(null), 2400);
+  };
+
+  const node = toast ? (
+    <div className="fixed right-6 top-6 z-[80]">
+      <div
+        className={`rounded-md px-3 py-2 text-xs shadow ${
+          toast.variant === "success"
+            ? "bg-emerald-600 text-white"
+            : toast.variant === "error"
+            ? "bg-red-600 text-white"
+            : "bg-zinc-900 text-white"
+        }`}
+      >
+        {toast.message}
+      </div>
+    </div>
+  ) : null;
+
+  return { show, node };
+}
+
 /* ───────────────────────────────────────────────────────────────
    Main Page
    ─────────────────────────────────────────────────────────────── */
 
 export default function SettingsPage() {
+  const toast = useToast();
   /* Business & base org props */
   const [business, setBusiness] = useState<Business>({
     name: "",
@@ -270,6 +302,7 @@ export default function SettingsPage() {
   /* Services & Staff */
   const [services, setServices] = useState<Service[]>([]);
   const [staff, setStaff] = useState<Staff[]>([]);
+  const [resettingStaffId, setResettingStaffId] = useState<string | null>(null);
 
   /* Roster (per staff) — UI uses Mon..Sun order */
   const [roster, setRoster] = useState<Roster>({});
@@ -321,6 +354,27 @@ export default function SettingsPage() {
     setRules((prev) => mergeDefaults(prev, preset.bookingRules ?? {}));
     setCalendarPrefs((prev) => mergeDefaults(prev, preset.calendarPrefs ?? {}));
     markDirty();
+  }
+
+  async function resetAgentProfile(staffId: string) {
+    if (!confirm("Reset AI receptionist profile data for this staff member? This cannot be undone.")) return;
+    setResettingStaffId(staffId);
+    try {
+      const res = await fetch("/api/org/staff/agent-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ staffId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || "Reset failed");
+      }
+      toast.show("AI receptionist profile reset.", "success");
+    } catch (e: any) {
+      toast.show(e?.message || "Reset failed", "error");
+    } finally {
+      setResettingStaffId(null);
+    }
   }
 
 // --- hydrate Settings from DB on first render ---
@@ -536,9 +590,12 @@ for (const [sid, cells] of Object.entries(roster)) {
   const activeStaff = useMemo(() => staff.filter((s) => s.active), [staff]);
   const staffLimitReached =
     planLimits.staffCount !== null && activeStaff.length >= planLimits.staffCount;
+  const displayPlanName =
+    planFeatures.calls === false ? "Aroha Bookings (No AI receptionist)" : planName;
 
   return (
     <div className="p-6 space-y-10 text-black">
+      {toast.node}
       {/* Header */}
       <header className="flex items-start justify-between gap-4 flex-wrap">
         <div>
@@ -695,7 +752,7 @@ setRoster(rosterMonFirst);
       />
 
       <PlanCard
-        planName={planName}
+        planName={displayPlanName}
         planLimits={planLimits}
         planFeatures={planFeatures}
         staffCount={activeStaff.length}
@@ -729,6 +786,8 @@ setRoster(rosterMonFirst);
         planLimit={planLimits.staffCount}
         limitReached={staffLimitReached}
         planFeatures={planFeatures}
+        onResetAgent={resetAgentProfile}
+        resettingId={resettingStaffId}
         onAdd={(s) => {
           setStaff((prev) => [...prev, s]);
           setRoster((prev) => {
@@ -924,7 +983,7 @@ function PlanCard({
     { key: "googleSync", label: "Google Calendar sync", benefit: "Keep external calendars in lockstep." },
     { key: "automations", label: "Automations", benefit: "Reduce no-shows with smart rules." },
     { key: "emailAI", label: "Email AI", benefit: "Auto-replies with confidence controls." },
-    { key: "calls", label: "Calls analytics", benefit: "Understand how calls convert." },
+    { key: "calls", label: "AI receptionist", benefit: "Automated voice receptionist for inbound calls." },
     { key: "staffPortal", label: "Staff portal", benefit: "Self-serve schedules for staff." },
     { key: "analytics", label: "Analytics dashboards", benefit: "Insights across bookings and ops." },
   ];
@@ -1200,6 +1259,8 @@ function StaffCard({
   onAdd,
   onUpdate,
   onDelete,
+  onResetAgent,
+  resettingId,
   planLimit,
   limitReached,
   planFeatures,
@@ -1209,6 +1270,8 @@ function StaffCard({
   onAdd: (s: Staff) => void;
   onUpdate: (id: string, patch: Partial<Staff>) => void;
   onDelete: (id: string) => void;
+  onResetAgent: (id: string) => void;
+  resettingId: string | null;
   planLimit: number | null;
   limitReached: boolean;
   planFeatures: PlanFeatures;
@@ -1249,7 +1312,7 @@ function StaffCard({
                 <th className="text-left px-4 py-2 font-medium">Colour</th>
                 <th className="text-left px-4 py-2 font-medium">Active</th>
                 <th className="text-left px-4 py-2 font-medium">Services</th>
-                <th className="text-right px-4 py-2 font-medium"></th>
+                <th className="text-right px-4 py-2 font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -1322,12 +1385,21 @@ function StaffCard({
                     </div>
                   </td>
                   <td className="px-4 py-2 text-right">
-                    <button
-                      className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50"
-                      onClick={() => onDelete(s.id)}
-                    >
-                      Delete
-                    </button>
+                    <div className="flex flex-col items-end gap-2">
+                      <button
+                        className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs hover:bg-zinc-50"
+                        onClick={() => onResetAgent(s.id)}
+                        disabled={resettingId === s.id}
+                      >
+                        {resettingId === s.id ? "Resetting..." : "Reset AI profile"}
+                      </button>
+                      <button
+                        className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50"
+                        onClick={() => onDelete(s.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

@@ -15,11 +15,11 @@ function json(data: unknown, status = 200) {
   });
 }
 
-export async function GET(_req: Request, ctx: { params: { id: string } }) {
+export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await getMembershipContext();
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
 
-  const appointmentId = ctx.params.id;
+  const { id: appointmentId } = await params;
   const timeline = await buildAppointmentTimeline(auth.orgId, appointmentId);
   if (!timeline) {
     return json({ ok: false, error: "Appointment not found" }, 404);

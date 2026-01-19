@@ -14,12 +14,13 @@ function json(data: unknown, status = 200) {
   });
 }
 
-export async function POST(_req: Request, ctx: { params: { id: string } }) {
+export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireAdminContext();
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+  const { id } = await params;
 
   const appt = await prisma.appointment.findUnique({
-    where: { id: ctx.params.id },
+    where: { id },
     select: { id: true, orgId: true },
   });
   if (!appt || appt.orgId !== auth.orgId) {

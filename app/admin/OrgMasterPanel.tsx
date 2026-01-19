@@ -13,6 +13,14 @@ type OrgMasterResponse = {
     timezone: string;
     plan: string;
   };
+  retell?: {
+    agentId: string | null;
+    apiKeyEncrypted: string | null;
+    webhookSecret: string | null;
+    active: boolean | null;
+    zapierWebhookUrl: string | null;
+    lastWebhookAt: string | null;
+  };
   planNotes?: string;
   staffCount?: number;
   planLimits?: { bookingsPerMonth: number | null; staffCount: number | null; automations: number | null };
@@ -90,10 +98,17 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
   const [entitlements, setEntitlements] = React.useState<OrgMasterResponse["entitlements"] | null>(null);
   const [planNotes, setPlanNotes] = React.useState("");
   const [selectedPlan, setSelectedPlan] = React.useState("PROFESSIONAL");
+  const [retellAgentId, setRetellAgentId] = React.useState("");
+  const [retellApiKey, setRetellApiKey] = React.useState("");
+  const [retellWebhookSecret, setRetellWebhookSecret] = React.useState("");
+  const [retellActive, setRetellActive] = React.useState(true);
+  const [retellZapierWebhookUrl, setRetellZapierWebhookUrl] = React.useState("");
+  const [retellLastWebhookAt, setRetellLastWebhookAt] = React.useState<string | null>(null);
   const [globalControls, setGlobalControls] = React.useState<{
     disableAutoSendAll: boolean;
     disableMessagesHubAll: boolean;
     disableEmailAIAll: boolean;
+    disableAiSummariesAll: boolean;
   } | null>(null);
 
   const appUrl = (process.env.NEXT_PUBLIC_APP_URL || "").trim();
@@ -119,6 +134,12 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
       setEntitlements(data.entitlements || null);
       setPlanNotes(data.planNotes || "");
       setSelectedPlan(data.org?.plan || "PROFESSIONAL");
+      setRetellAgentId(data.retell?.agentId || "");
+      setRetellApiKey(data.retell?.apiKeyEncrypted || "");
+      setRetellWebhookSecret(data.retell?.webhookSecret || "");
+      setRetellActive(Boolean(data.retell?.active));
+      setRetellZapierWebhookUrl(data.retell?.zapierWebhookUrl || "");
+      setRetellLastWebhookAt(data.retell?.lastWebhookAt || null);
       setLimits({
         bookingsPerMonth: data.planLimits?.bookingsPerMonth?.toString() || "",
         staffCount: data.planLimits?.staffCount?.toString() || "",
@@ -259,6 +280,36 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
       await loadInfo(orgId);
     } catch {
       setStatus("Failed to update plan.");
+    }
+  }
+
+  async function saveRetellSettings() {
+    if (!orgId) return;
+    setStatus(null);
+    try {
+      const res = await fetch("/api/admin/org-master", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orgId,
+          retell: {
+            agentId: retellAgentId,
+            apiKeyEncrypted: retellApiKey,
+            webhookSecret: retellWebhookSecret,
+            active: retellActive,
+          },
+          zapierWebhookUrl: retellZapierWebhookUrl,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setStatus(data.error || "Failed to update Retell settings.");
+        return;
+      }
+      setStatus("Retell settings updated.");
+      await loadInfo(orgId);
+    } catch {
+      setStatus("Failed to update Retell settings.");
     }
   }
 
@@ -469,6 +520,84 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
 
       <div className="mt-4 grid gap-4 md:grid-cols-2">
         <div className="rounded-lg border border-zinc-200 bg-white p-4">
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Retell settings</div>
+          <div className="mt-3 grid gap-3 text-sm">
+            <label className="grid gap-1">
+              <span className="text-xs text-zinc-500">Agent ID</span>
+              <input
+                value={retellAgentId}
+                onChange={(e) => setRetellAgentId(e.target.value)}
+                className="rounded-md border border-zinc-300 px-3 py-2 text-sm"
+                placeholder="retell_agent_..."
+              />
+            </label>
+            <label className="grid gap-1">
+              <span className="text-xs text-zinc-500">API key (encrypted)</span>
+              <input
+                value={retellApiKey}
+                onChange={(e) => setRetellApiKey(e.target.value)}
+                className="rounded-md border border-zinc-300 px-3 py-2 text-sm"
+                placeholder="Encrypted key"
+              />
+            </label>
+            <label className="grid gap-1">
+              <span className="text-xs text-zinc-500">Webhook secret</span>
+              <input
+                value={retellWebhookSecret}
+                onChange={(e) => setRetellWebhookSecret(e.target.value)}
+                className="rounded-md border border-zinc-300 px-3 py-2 text-sm"
+                placeholder="whsec_..."
+              />
+            </label>
+            <label className="flex items-center gap-2 text-xs text-zinc-600">
+              <input
+                type="checkbox"
+                checked={retellActive}
+                onChange={(e) => setRetellActive(e.target.checked)}
+              />
+              Active
+            </label>
+            <div className="text-xs text-zinc-500">
+              Last webhook: {formatDateTime(retellLastWebhookAt)}
+            </div>
+            <button
+              type="button"
+              onClick={saveRetellSettings}
+              className="rounded-md border border-zinc-300 px-3 py-2 text-xs text-zinc-700 hover:bg-zinc-100"
+            >
+              Save Retell settings
+            </button>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-zinc-200 bg-white p-4">
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Zapier override</div>
+          <div className="mt-3 grid gap-3 text-sm">
+            <label className="grid gap-1">
+              <span className="text-xs text-zinc-500">Per-org Zapier URL</span>
+              <input
+                value={retellZapierWebhookUrl}
+                onChange={(e) => setRetellZapierWebhookUrl(e.target.value)}
+                className="rounded-md border border-zinc-300 px-3 py-2 text-sm"
+                placeholder="https://hooks.zapier.com/..."
+              />
+            </label>
+            <div className="text-xs text-zinc-500">
+              Leave blank to use the global Zapier URL.
+            </div>
+            <button
+              type="button"
+              onClick={saveRetellSettings}
+              className="rounded-md border border-zinc-300 px-3 py-2 text-xs text-zinc-700 hover:bg-zinc-100"
+            >
+              Save Zapier override
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <div className="rounded-lg border border-zinc-200 bg-white p-4">
           <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Plan control</div>
           <div className="mt-3 grid gap-3 text-sm">
             <label className="grid gap-1">
@@ -540,6 +669,16 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
                     }
                   />
                   Disable Email AI globally
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={globalControls.disableAiSummariesAll}
+                    onChange={(e) =>
+                      setGlobalControls({ ...globalControls, disableAiSummariesAll: e.target.checked })
+                    }
+                  />
+                  Disable AI summaries globally
                 </label>
                 <button
                   type="button"
@@ -830,7 +969,24 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
                   className="rounded-md border border-zinc-300 px-2 py-1 text-xs"
                 />
               </label>
-            </div>
+              <label className="grid gap-1">
+  <span className="text-zinc-500">Calls poll (sec)</span>
+  <input
+    type="number"
+    value={(entitlements.limits as any)?.callsSyncIntervalSec ?? 20}
+    onChange={(e) =>
+  setEntitlements({
+    ...entitlements,
+    limits: ({
+      ...(entitlements.limits as any),
+      callsSyncIntervalSec: Number(e.target.value || 0),
+    } as typeof entitlements.limits),
+  })
+}
+    className="rounded-md border border-zinc-300 px-2 py-1 text-xs"
+  />
+</label>
+</div>
             <div className="grid gap-3 md:grid-cols-3 text-sm">
               {Object.entries(entitlements.channels).map(([key, value]) => (
                 <label key={key} className="flex items-center gap-2">

@@ -1,3 +1,4 @@
+// FILE MAP: app layout at app/layout.tsx; Retell webhook at app/api/webhooks/voice/[provider]/[orgId]/route.ts.
 "use client";
 
 import Link from "next/link";
@@ -145,7 +146,12 @@ export default function AppShell({
                 )}
 
                 <Link href="/dashboard" className="flex items-center gap-3" aria-label="Aroha Bookings">
-                  <BrandLogo branding={branding} />
+                  <BrandLogo
+                    branding={branding}
+                    showWordmark={false}
+                    chrome="header"
+                    className="max-w-[320px]"
+                  />
                 </Link>
               </div>
 
@@ -156,7 +162,7 @@ export default function AppShell({
                   aria-label="Organization settings"
                   title="Organization settings"
                 >
-                  <span className="h-2 w-2 rounded-full bg-emerald-400" aria-hidden />
+                  <span className="h-2 w-2 rounded-full" aria-hidden style={{ backgroundColor: "var(--brand-primary)" }} />
                   {orgLabel}
                 </Link>
 
@@ -182,6 +188,21 @@ export default function AppShell({
           <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8">
             <div className="mx-auto w-full max-w-6xl">{children}</div>
           </main>
+
+          <footer className="border-t border-zinc-200/70 bg-white/70 px-4 py-4 text-xs text-zinc-500 sm:px-6 lg:px-8">
+            <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-3">
+              <a href="/terms" className="hover:text-zinc-800">Terms</a>
+              <a href="/privacy" className="hover:text-zinc-800">Privacy</a>
+              <a
+                href="https://instagram.com/aroha_calls"
+                target="_blank"
+                rel="noreferrer"
+                className="hover:text-zinc-800"
+              >
+                Instagram
+              </a>
+            </div>
+          </footer>
         </div>
       </div>
 
@@ -201,7 +222,7 @@ export default function AppShell({
               managePlanUrl={managePlanUrl}
               entitlements={entitlements}
               onNavigate={() => setMobileOpen(false)}
-              showCollapse={false}
+              showCollapse
             />
           </div>
         </div>

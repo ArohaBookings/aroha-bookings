@@ -2,6 +2,7 @@
 "use client";
 
 import Link from "next/link";
+import BrandLogo from "@/components/BrandLogo";
 import { usePathname } from "next/navigation";
 import React from "react";
 import { useSession } from "next-auth/react";
@@ -280,15 +281,13 @@ export default function Sidebar(): React.ReactElement {
               collapsed ? "justify-center" : ""
             )}
           >
-            <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-teal-500 text-zinc-950 font-black shadow-sm shadow-teal-500/20">
-              A
-            </span>
-            {!collapsed && (
-              <div className="leading-tight">
-                <div className="text-sm font-semibold tracking-tight">Aroha Bookings</div>
-                <div className="text-[11px] text-zinc-400">Premium scheduling</div>
-              </div>
-            )}
+            <BrandLogo
+              mode="full"
+              showWordmark={false}
+              showWordmarkText={false}
+              size={40}
+              priority="chrome"
+            />
           </Link>
 
           {!collapsed && <div className="ml-auto" />}

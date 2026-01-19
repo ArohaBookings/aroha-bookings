@@ -14,9 +14,10 @@ function json(data: unknown, status = 200) {
   });
 }
 
-export async function POST(req: Request, ctx: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireAdminContext();
   if (!auth.ok) return json({ ok: false, error: auth.error }, auth.status);
+  const { id } = await params;
 
   const body = (await req.json().catch(() => ({}))) as {
     guardrail?: Record<string, unknown>;
@@ -27,7 +28,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
   }
 
   const customer = await prisma.customer.findUnique({
-    where: { id: ctx.params.id },
+    where: { id },
     select: { id: true, orgId: true },
   });
   if (!customer || customer.orgId !== auth.orgId) {

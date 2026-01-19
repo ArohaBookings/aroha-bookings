@@ -1,3 +1,4 @@
+// FILE MAP: app layout at app/layout.tsx; Retell webhook at app/api/webhooks/voice/[provider]/[orgId]/route.ts.
 // app/admin/VoiceProvidersPanel.tsx
 "use client";
 
@@ -15,14 +16,14 @@ type Connection = {
 
 const PROVIDERS = [{ value: "retell", label: "Retell" }] as const;
 
-function buildWebhookUrl(baseUrl: string, orgId: string) {
-  if (!baseUrl || !orgId) return "";
+function buildWebhookUrl(baseUrl: string) {
+  if (!baseUrl) return "";
 
   const cleanBase = baseUrl.endsWith("/")
     ? baseUrl.slice(0, -1)
     : baseUrl;
 
-  return `${cleanBase}/api/webhooks/voice/retell/${orgId}`;
+  return `${cleanBase}/api/webhooks/retell`;
 }
 
 
@@ -35,17 +36,25 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
   const [active, setActive] = React.useState(true);
   const [status, setStatus] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
+  const loadAbortRef = React.useRef<AbortController | null>(null);
+  const saveAbortRef = React.useRef<AbortController | null>(null);
+  const clearAbortRef = React.useRef<AbortController | null>(null);
+  const rotateAbortRef = React.useRef<AbortController | null>(null);
+  const testAbortRef = React.useRef<AbortController | null>(null);
 
-  const webhookUrl = buildWebhookUrl(appUrl, orgId);
+  const webhookUrl = buildWebhookUrl(appUrl);
   const missingEnv = !appUrl;
 
   async function loadConnection() {
     if (!orgId) return;
     setLoading(true);
     setStatus(null);
+    if (loadAbortRef.current) loadAbortRef.current.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
     try {
       const url = `/api/admin/voice-connection?orgId=${encodeURIComponent(orgId)}&provider=${encodeURIComponent(provider)}`;
-      const res = await fetch(url, { cache: "no-store" });
+      const res = await fetch(url, { cache: "no-store", signal: controller.signal });
       const json = (await res.json()) as { ok: boolean; connection?: Connection | null; error?: string };
       if (!res.ok || !json.ok) {
         setStatus(json.error || "Unable to load connection.");
@@ -61,8 +70,8 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
         setWebhookSecret("");
         setActive(true);
       }
-    } catch (e) {
-      setStatus("Unable to load connection.");
+    } catch (e: any) {
+      if (e?.name !== "AbortError") setStatus("Unable to load connection.");
     } finally {
       setLoading(false);
     }
@@ -76,10 +85,14 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
     if (!orgId) return;
     setLoading(true);
     setStatus(null);
+    if (saveAbortRef.current) saveAbortRef.current.abort();
+    const controller = new AbortController();
+    saveAbortRef.current = controller;
     try {
       const res = await fetch("/api/admin/voice-connection", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           orgId,
           provider,
@@ -94,8 +107,38 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
         return;
       }
       setStatus("Connection saved.");
-    } catch {
-      setStatus("Unable to save connection.");
+    } catch (e: any) {
+      if (e?.name !== "AbortError") setStatus("Unable to save connection.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function clearConnection() {
+    if (!orgId) return;
+    setLoading(true);
+    setStatus(null);
+    if (clearAbortRef.current) clearAbortRef.current.abort();
+    const controller = new AbortController();
+    clearAbortRef.current = controller;
+    try {
+      const res = await fetch("/api/admin/voice-connection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({ orgId, provider, clear: true }),
+      });
+      const json = (await res.json()) as { ok: boolean; error?: string };
+      if (!res.ok || !json.ok) {
+        setStatus(json.error || "Unable to clear connection.");
+        return;
+      }
+      setAgentId("");
+      setWebhookSecret("");
+      setActive(false);
+      setStatus("Connection cleared.");
+    } catch (e: any) {
+      if (e?.name !== "AbortError") setStatus("Unable to clear connection.");
     } finally {
       setLoading(false);
     }
@@ -105,10 +148,14 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
     if (!orgId || !agentId) return;
     setLoading(true);
     setStatus(null);
+    if (rotateAbortRef.current) rotateAbortRef.current.abort();
+    const controller = new AbortController();
+    rotateAbortRef.current = controller;
     try {
       const res = await fetch("/api/admin/voice-connection/rotate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({ orgId, provider, agentId }),
       });
       const json = (await res.json()) as { ok: boolean; error?: string; connection?: Connection };
@@ -118,8 +165,8 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
       }
       setWebhookSecret(json.connection.webhookSecret);
       setStatus("Webhook secret rotated.");
-    } catch {
-      setStatus("Unable to rotate secret.");
+    } catch (e: any) {
+      if (e?.name !== "AbortError") setStatus("Unable to rotate secret.");
     } finally {
       setLoading(false);
     }
@@ -129,10 +176,14 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
     if (!orgId || !agentId) return;
     setLoading(true);
     setStatus(null);
+    if (testAbortRef.current) testAbortRef.current.abort();
+    const controller = new AbortController();
+    testAbortRef.current = controller;
     try {
       const res = await fetch("/api/admin/voice-connection/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({ orgId, provider, agentId }),
       });
       const json = (await res.json()) as { ok: boolean; error?: string };
@@ -141,8 +192,8 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
         return;
       }
       setStatus("Test webhook delivered.");
-    } catch {
-      setStatus("Test webhook failed.");
+    } catch (e: any) {
+      if (e?.name !== "AbortError") setStatus("Test webhook failed.");
     } finally {
       setLoading(false);
     }
@@ -258,6 +309,14 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
           className="inline-flex items-center justify-center rounded-lg bg-black px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
         >
           Save connection
+        </button>
+        <button
+          type="button"
+          onClick={clearConnection}
+          disabled={loading || !orgId}
+          className="inline-flex items-center justify-center rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-700 disabled:opacity-60"
+        >
+          Clear connection
         </button>
         <button
           type="button"

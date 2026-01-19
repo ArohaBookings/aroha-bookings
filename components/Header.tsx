@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 import Link from "next/link";
+import BrandLogo from "@/components/BrandLogo";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { unstable_noStore as noStore } from "next/cache";
@@ -88,18 +89,18 @@ export default async function Header() {
 
   return (
     <header
-      className="sticky top-0 z-40 h-14 border-b border-zinc-200 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60"
+      className="sticky top-0 z-40 h-16 border-b border-zinc-200 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60"
       role="banner"
     >
       <div className="mx-auto flex h-full w-full max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
         {/* Left side: brand + nav */}
         <div className="flex items-center gap-4 min-w-0">
-          <Link
-            href="/"
-            className="font-semibold tracking-tight text-zinc-900 hover:text-zinc-700 whitespace-nowrap"
-            aria-label="Aroha Bookings — Home"
-          >
-            Aroha Bookings
+          <Link href="/" aria-label="Aroha Bookings — Home">
+            <BrandLogo
+              showWordmark={false}
+              chrome="header"
+              className="max-w-[320px]"
+            />
           </Link>
 
           {/* Org + plan chips */}

@@ -10,6 +10,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import CallsClient, { type CallRow } from "./CallsClient";
+import { resolveCallerPhone } from "@/lib/calls/summary";
+import { getOrgEntitlements } from "@/lib/entitlements";
 
 type SearchParams = {
   from?: string;
@@ -76,6 +78,21 @@ export default async function CallsPage({
     );
   }
 
+  const entitlements = await getOrgEntitlements(org.id);
+  if (!entitlements.features.calls && !entitlements.features.aiReceptionist) {
+    return (
+      <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
+        <h1 className="text-xl font-semibold">AI Receptionist</h1>
+        <p className="mt-2 text-sm text-zinc-600">
+          AI Receptionist is not included in your current plan.
+        </p>
+        <p className="mt-2 text-xs text-zinc-500">
+          Contact your admin to enable AI Receptionist, or upgrade your plan.
+        </p>
+      </div>
+    );
+  }
+
   const now = new Date();
   const defaultFrom = startOfDayLocal(new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000));
   const fromDate = parseDateParam(params.from) ?? defaultFrom;
@@ -131,7 +148,8 @@ export default async function CallsPage({
     agentId: row.agentId,
     startedAt: row.startedAt.toISOString(),
     endedAt: row.endedAt ? row.endedAt.toISOString() : null,
-    callerPhone: row.callerPhone,
+    callerPhone: resolveCallerPhone(row.rawJson, row.callerPhone),
+    businessPhone: row.businessPhone ?? null,
     transcript: row.transcript,
     recordingUrl: row.recordingUrl,
     outcome: row.outcome,

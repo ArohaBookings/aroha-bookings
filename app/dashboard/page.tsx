@@ -25,6 +25,7 @@ import EmptyState from "@/components/ui/EmptyState";
 import { redirect } from "next/navigation";
 import { unstable_noStore as noStore } from "next/cache";
 import { Badge } from "@/components/ui";
+import { getOrgEntitlements } from "@/lib/entitlements";
 
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -168,6 +169,9 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
     );
   }
 
+  const entitlements = await getOrgEntitlements(org.id);
+  const showCallAnalytics = entitlements.features.analytics;
+
   const now = new Date();
   const todayStart = startOfDay(now);
   const todayEnd = endOfDay(now);
@@ -204,6 +208,12 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   let responseSamples: Array<{ receivedAt: Date | null; createdAt: Date }> = [];
   let noShowRecent = 0;
   let noShowPrev = 0;
+  let callLogs7d: Array<{
+    startedAt: Date;
+    endedAt: Date | null;
+    outcome: string;
+    appointmentId: string | null;
+  }> = [];
 
   try {
     [
@@ -227,6 +237,7 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
       noShowRecent,
       noShowPrev,
       recoveredCount,
+      callLogs7d,
     ] = await Promise.all([
       prisma.appointment.count({
         where: { orgId: org.id, startsAt: { gte: todayStart, lte: todayEnd } },
@@ -375,6 +386,21 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           createdAt: { gte: daysAgo(now, 7) },
         },
       }),
+      showCallAnalytics
+        ? prisma.callLog.findMany({
+            where: {
+              orgId: org.id,
+              startedAt: { gte: daysAgo(now, 6), lte: now },
+            },
+            select: {
+              startedAt: true,
+              endedAt: true,
+              outcome: true,
+              appointmentId: true,
+            },
+            orderBy: { startedAt: "asc" },
+          })
+        : Promise.resolve([]),
     ]);
   } catch (err) {
     console.error("Dashboard data error", err);
@@ -446,6 +472,30 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
       ].join("\n")
     );
     if (aiText) healthSummary = aiText;
+  }
+
+  const callPoints: WeekPoint[] = [];
+  let callsAnswered = 0;
+  let callsMissed = 0;
+  let callsBookings = 0;
+  let callsMinutes = 0;
+  let callConversionPct = 0;
+  if (showCallAnalytics) {
+    const dayMap = new Map<string, number>();
+    callLogs7d.forEach((log) => {
+      const key = weekLabel(log.startedAt);
+      dayMap.set(key, (dayMap.get(key) || 0) + 1);
+      if (log.outcome === "COMPLETED") callsAnswered += 1;
+      else callsMissed += 1;
+      if (log.appointmentId) callsBookings += 1;
+      if (log.endedAt) callsMinutes += minutesBetween(log.startedAt, log.endedAt);
+    });
+    for (let i = 6; i >= 0; i--) {
+      const day = daysAgo(now, i);
+      const label = weekLabel(day);
+      callPoints.push({ label, value: dayMap.get(label) || 0 });
+    }
+    callConversionPct = callsAnswered ? Math.round((callsBookings / callsAnswered) * 100) : 0;
   }
 
   const uniqueClientsToday = uniqueTodayPhones.length;
@@ -848,6 +898,33 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           )}
         </SectionCard>
       </section>
+
+      {showCallAnalytics && (
+        <section className="grid lg:grid-cols-2 gap-6">
+          <SectionCard title="Calls (last 7 days)">
+            {sumValues(callPoints) > 0 ? (
+              <BarChart points={callPoints} height={160} />
+            ) : (
+              <Empty text="No calls yet." />
+            )}
+            <div className="mt-2 text-sm text-zinc-600">
+              Total: <strong>{sumValues(callPoints)}</strong>
+            </div>
+          </SectionCard>
+
+          <SectionCard title="Call outcomes (last 7 days)">
+            <div className="grid sm:grid-cols-2 gap-4">
+              <Health number={callsAnswered} label="Answered" />
+              <Health number={callsMissed} label="Missed" />
+              <Health number={callsBookings} label="Bookings" />
+              <Health number={callsMinutes} label="Minutes" />
+            </div>
+            <p className="text-xs text-zinc-500 mt-3">
+              Conversion: {callConversionPct}% of answered calls created a booking.
+            </p>
+          </SectionCard>
+        </section>
+      )}
 
       {/* Utilisation + Health */}
       <section className="grid lg:grid-cols-2 gap-6">

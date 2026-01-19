@@ -9,6 +9,7 @@ import Card from "@/components/ui/Card";
 import Input from "@/components/ui/Input";
 import Skeleton from "@/components/Skeleton";
 import BrandLogo from "@/components/BrandLogo";
+import IntentActionsPanel from "@/components/IntentActionsPanel";
 import type { BrandingConfig } from "@/lib/branding";
 
 type InboxItem = {
@@ -591,6 +592,8 @@ export default function InboxClient() {
     : "—";
 
   const automationActive = !!(!settings?.automationPaused && (settings?.enableAutoSend || settings?.enableAutoDraft));
+  const activeItem = items.find((i) => i.id === activeId) || null;
+  const activeAi = activeItem ? getAI(activeItem) : null;
 
   const commands = useMemo(
     () => [
@@ -715,7 +718,7 @@ export default function InboxClient() {
       <div className="p-6 space-y-4">
         <h1 className="text-2xl font-semibold">Email AI Inbox</h1>
         <p className="text-zinc-600">
-          Email AI is disabled for this plan.{" "}
+          Email AI is not included in your current plan.{" "}
           <a className="underline" href="/settings">
             Upgrade to enable
           </a>
@@ -730,7 +733,14 @@ export default function InboxClient() {
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex-1 min-w-[220px]">
           <div className="flex items-center gap-3">
-            <BrandLogo branding={identity?.branding} showWordmark={false} />
+            <BrandLogo
+              branding={identity?.branding}
+              mode="full"
+              showWordmark={false}
+              showWordmarkText={false}
+              size={36}
+              className="max-w-[180px]"
+            />
             <div>
               <h1 className="text-2xl font-semibold text-zinc-900">Email AI Inbox</h1>
               <p className="text-sm text-zinc-600">
@@ -754,6 +764,7 @@ export default function InboxClient() {
         <Card className="flex flex-wrap items-center gap-3 text-xs text-zinc-600">
           <div>Google: {tokenState.email || "Connected"}</div>
           <div>Sync interval: {Math.round(backoffRef.current / 1000)}s</div>
+          <div>Auto-send threshold {settings?.autoSendMinConfidence ?? 92}%</div>
           {syncError && <span className="text-rose-600">{syncError}</span>}
           {syncState.lastError && !syncError && (
             <span className="text-rose-600">{syncState.lastError}</span>
@@ -1090,6 +1101,13 @@ export default function InboxClient() {
                   {holdMessage && <div className="mt-2 text-[11px] text-emerald-700">{holdMessage}</div>}
                   {holdBusy && <div className="mt-2 text-[11px] text-zinc-500">Creating hold…</div>}
                 </div>
+
+                <IntentActionsPanel
+                  text={detail.snippet || detail.subject || ""}
+                  category={activeAi?.category}
+                  risk={activeAi?.risk}
+                  orgSlug={identity?.org?.slug || null}
+                />
 
                 <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3" key={detail.id}>
                   <div className="text-xs font-semibold text-zinc-600">Draft</div>
