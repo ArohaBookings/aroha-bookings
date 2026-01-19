@@ -11,9 +11,7 @@ import { redirect } from "next/navigation";
 import { getOrgEntitlements } from "@/lib/entitlements";
 import { Card } from "@/components/ui";
 import CallsAnalyticsClient from "./CallsAnalyticsClient";
-import { getBoolParam, getLowerParam, getParam } from "@/lib/http/searchParams";
-
-type SearchParams = Record<string, string | string[] | undefined>;
+import { getBoolParam, getLowerParam, getParam, type SearchParams } from "@/lib/http/searchParams";
 
 function toInputDate(d: Date) {
   const yyyy = d.getFullYear();
@@ -25,10 +23,13 @@ function toInputDate(d: Date) {
 export default async function CallsAnalyticsPage({
   searchParams,
 }: {
-  searchParams: SearchParams;
+  searchParams: Promise<SearchParams>;
 }): Promise<React.ReactElement> {
+  const sp = (await searchParams) ?? {};
   const session = await getServerSession(authOptions);
-  if (!session?.user?.email) redirect("/api/auth/signin");
+  if (!session?.user?.email) {
+    redirect(`/login?callbackUrl=${encodeURIComponent("/analytics/calls")}`);
+  }
 
   const user = await prisma.user.findUnique({
     where: { email: session.user.email! },
@@ -96,17 +97,17 @@ export default async function CallsAnalyticsPage({
       staffOptions={staff.map((s) => ({ id: s.id, name: s.name || "Staff" }))}
       serviceOptions={services.map((s) => ({ id: s.id, name: s.name }))}
       entitlements={entitlements}
-      initialView={getLowerParam(searchParams, "view", "inbox")}
+      initialView={getLowerParam(sp, "view", "inbox")}
       initialFilters={{
-        from: getParam(searchParams, "from") || toInputDate(defaultFrom),
-        to: getParam(searchParams, "to") || toInputDate(defaultTo),
-        agent: getParam(searchParams, "agent"),
-        outcome: getParam(searchParams, "outcome"),
-        q: getParam(searchParams, "q"),
-        staffId: getParam(searchParams, "staffId"),
-        serviceId: getParam(searchParams, "serviceId"),
-        businessHoursOnly: getBoolParam(searchParams, "businessHoursOnly"),
-        riskRadar: getBoolParam(searchParams, "riskRadar"),
+        from: getParam(sp, "from") || toInputDate(defaultFrom),
+        to: getParam(sp, "to") || toInputDate(defaultTo),
+        agent: getParam(sp, "agent"),
+        outcome: getParam(sp, "outcome"),
+        q: getParam(sp, "q"),
+        staffId: getParam(sp, "staffId"),
+        serviceId: getParam(sp, "serviceId"),
+        businessHoursOnly: getBoolParam(sp, "businessHoursOnly"),
+        riskRadar: getBoolParam(sp, "riskRadar"),
       }}
       initialAiSummariesEnabled={Boolean(callsAnalytics.enableAiSummaries)}
     />

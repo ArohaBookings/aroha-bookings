@@ -7,6 +7,11 @@ const PUBLIC_PATHS = [
   "/",            // marketing homepage
   "/login",
   "/register",
+  "/privacy",
+  "/terms",
+  "/book",
+  "/b",
+  "/manage",
   "/api/auth",    // NextAuth routes
   "/favicon.ico",
   "/robots.txt",
@@ -31,10 +36,19 @@ export function middleware(req: NextRequest) {
 
   // 2) Only gate the app areas
   const needsAuth =
+    pathname.startsWith("/admin") ||
     pathname.startsWith("/dashboard") ||
     pathname.startsWith("/calendar") ||
+    pathname.startsWith("/calls") ||
     pathname.startsWith("/clients") ||
-    pathname.startsWith("/settings");
+    pathname.startsWith("/settings") ||
+    pathname.startsWith("/analytics") ||
+    pathname.startsWith("/messages") ||
+    pathname.startsWith("/timeline") ||
+    pathname.startsWith("/staff") ||
+    pathname.startsWith("/email-ai") ||
+    pathname.startsWith("/automations") ||
+    pathname.startsWith("/support");
 
   if (!needsAuth) {
     return NextResponse.next();
@@ -46,6 +60,7 @@ export function middleware(req: NextRequest) {
     !!req.cookies.get("__Secure-next-auth.session-token");
 
   if (!hasSession) {
+    console.warn("[middleware] redirect to /login (no session)", pathname);
     const url = req.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set(

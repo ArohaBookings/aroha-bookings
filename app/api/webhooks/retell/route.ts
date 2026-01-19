@@ -3,7 +3,12 @@
 import { NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/db";
-import { parseRetellPayload, touchLastWebhook, upsertRetellCall } from "@/lib/retell/ingest";
+import {
+  parseRetellPayload,
+  touchLastWebhook,
+  touchLastWebhookError,
+  upsertRetellCall,
+} from "@/lib/retell/ingest";
 import {
   enqueueForwardJob,
   resolveZapierDestination,
@@ -105,6 +110,7 @@ function getClientIp(req: Request): string {
 }
 
 export async function POST(req: Request) {
+  let orgId: string | null = null;
   try {
     const ip = getClientIp(req);
     if (!rateLimit(ip, 180)) {
@@ -139,6 +145,7 @@ export async function POST(req: Request) {
     if (!connection) {
       return NextResponse.json({ ok: false, error: "Unknown agent" }, { status: 401 });
     }
+    orgId = connection.orgId;
 
     const signatureHeader =
       req.headers.get("x-retell-signature") || req.headers.get("retell-signature");
@@ -153,6 +160,9 @@ export async function POST(req: Request) {
 
     // Persist call first (primary)
     await upsertRetellCall(connection.orgId, parsed);
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[retell.webhook] ingested", { orgId: connection.orgId, callId: parsed.callId });
+    }
 
     // Update timestamps (best-effort)
     await Promise.all([
@@ -185,6 +195,14 @@ try {
     return NextResponse.json({ ok: true });
   } catch (e: unknown) {
     console.error("retell.webhook error:", e);
+    const message = e instanceof Error ? e.message : "Webhook error";
+    if (orgId) {
+      try {
+        await touchLastWebhookError(orgId, message);
+      } catch {
+        // ignore error tracking failures
+      }
+    }
     return NextResponse.json({ ok: false, error: "Server error" }, { status: 500 });
   }
 }

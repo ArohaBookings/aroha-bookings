@@ -10,9 +10,7 @@ import { redirect } from "next/navigation";
 import Card from "@/components/ui/Card";
 import { buildOrgTimeline } from "@/lib/timeline";
 import { getOrgEntitlements } from "@/lib/entitlements";
-import { getBoolParam, getParam } from "@/lib/http/searchParams";
-
-type SearchParams = Record<string, string | string[] | undefined>;
+import { getBoolParam, getParam, resolveSearchParams, type SearchParams } from "@/lib/http/searchParams";
 
 function toInputDate(d: Date) {
   return d.toISOString().slice(0, 10);
@@ -21,8 +19,9 @@ function toInputDate(d: Date) {
 export default async function TimelinePage({
   searchParams,
 }: {
-  searchParams: SearchParams;
+  searchParams: SearchParams | Promise<SearchParams>;
 }): Promise<React.ReactElement> {
+  const sp = await resolveSearchParams(searchParams);
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) redirect("/api/auth/signin");
 
@@ -54,10 +53,10 @@ export default async function TimelinePage({
     );
   }
 
-  const fromParam = getParam(searchParams, "from");
-  const toParam = getParam(searchParams, "to");
-  const typeParam = getParam(searchParams, "type");
-  const pageParam = getParam(searchParams, "page");
+  const fromParam = getParam(sp, "from");
+  const toParam = getParam(sp, "to");
+  const typeParam = getParam(sp, "type");
+  const pageParam = getParam(sp, "page");
 
   const from = fromParam ? new Date(fromParam) : null;
   const to = toParam ? new Date(toParam) : null;
@@ -68,7 +67,7 @@ export default async function TimelinePage({
     select: { data: true },
   });
   const data = (settings?.data as Record<string, unknown>) || {};
-  const demoMode = getBoolParam(searchParams, "demo") || Boolean(data.demoMode);
+  const demoMode = getBoolParam(sp, "demo") || Boolean(data.demoMode);
 
   const timeline = await buildOrgTimeline({ orgId: org.id, from, to, demoMode, page, limit: 120 });
   let events = timeline.events;
@@ -76,6 +75,13 @@ export default async function TimelinePage({
     const wanted = typeParam.toUpperCase();
     events = events.filter((e) => e.type.toUpperCase() === wanted);
   }
+  const seen = new Set<string>();
+  const deduped = events.filter((event) => {
+    const key = event.id || `${event.type}-${event.at}-${event.detail}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   const totalPages = Math.max(1, Math.ceil(timeline.totalBookings / timeline.limit));
 
   return (
@@ -166,11 +172,11 @@ export default async function TimelinePage({
       </div>
 
       <div className="space-y-3">
-        {events.length === 0 ? (
+        {deduped.length === 0 ? (
           <Card className="p-6 text-sm text-zinc-600">No timeline events in this range.</Card>
         ) : (
-          events.map((event) => (
-            <Card key={`${event.type}-${event.at}`} className="p-4">
+          deduped.map((event) => (
+            <Card key={event.id} className="p-4">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-sm font-semibold text-zinc-900">
                   {event.type.replace(/_/g, " ")}

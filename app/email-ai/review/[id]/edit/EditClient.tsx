@@ -151,14 +151,17 @@ export default function EditClient({ id, initialSubject, initialBody }: Props) {
       setMsg(e?.message || "Failed.");
       setMsgKind("err");
     } finally {
-    setBusy(null);
+      setBusy(null);
+    }
   }
+
+  type DiffRow = { a: string; b: string; changed: boolean };
 
   function diffLines(a: string, b: string) {
     const aLines = a.split("\n");
     const bLines = b.split("\n");
     const max = Math.max(aLines.length, bLines.length);
-    const rows = [];
+    const rows: DiffRow[] = [];
     for (let i = 0; i < max; i++) {
       rows.push({
         a: aLines[i] ?? "",
@@ -169,8 +172,7 @@ export default function EditClient({ id, initialSubject, initialBody }: Props) {
     return rows;
   }
 
-  const diff = diffLines(initialBody, currentBody);
-  }
+  const diff: DiffRow[] = diffLines(initialBody, currentBody);
 
   return (
     <form

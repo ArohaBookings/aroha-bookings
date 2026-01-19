@@ -122,7 +122,10 @@ export async function requireOrgOrPurchase(opts: RequireOpts = {}): Promise<Requ
   // 1) Must be signed in
   const session = await getServerSession(authOptions);
   const email = session?.user?.email ?? null;
-  if (!email) redirect("/login");
+  if (!email) {
+    console.warn("[auth] requireOrgOrPurchase: no session");
+    redirect("/login");
+  }
 
   // 2) Superadmin bypass
   if (isSuperAdminEmail(email)) {
@@ -191,6 +194,7 @@ export async function requireOrgOrPurchase(opts: RequireOpts = {}): Promise<Requ
   }
 
   // Otherwise, block
+  console.warn("[auth] requireOrgOrPurchase: no org or purchase", email);
   redirect(redirectToIfNoOrg);
 }
 

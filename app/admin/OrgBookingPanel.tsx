@@ -2,6 +2,7 @@
 "use client";
 
 import React from "react";
+import { renderScalar } from "@/lib/ui/renderScalar";
 
 type OrgLite = { id: string; name: string };
 type OrgInfo = {
@@ -23,6 +24,7 @@ function toInputDate(d: Date) {
   return d.toISOString().slice(0, 10);
 }
 
+
 export default function OrgBookingPanel({ orgs }: { orgs: OrgLite[] }) {
   const [orgId, setOrgId] = React.useState(orgs[0]?.id || "");
   const [info, setInfo] = React.useState<OrgInfoResponse | null>(null);
@@ -42,13 +44,13 @@ export default function OrgBookingPanel({ orgs }: { orgs: OrgLite[] }) {
       });
       const data = (await res.json()) as OrgInfoResponse;
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Failed to load org info.");
+        setStatus(renderScalar(data.error || "Failed to load org info."));
         setInfo(null);
         return;
       }
       setInfo(data);
     } catch {
-      setStatus("Failed to load org info.");
+      setStatus(renderScalar("Failed to load org info."));
       setInfo(null);
     } finally {
       setLoading(false);
@@ -63,9 +65,9 @@ export default function OrgBookingPanel({ orgs }: { orgs: OrgLite[] }) {
     if (!bookingUrl) return;
     try {
       await navigator.clipboard.writeText(bookingUrl);
-      setStatus("Booking link copied.");
+      setStatus(renderScalar("Booking link copied."));
     } catch {
-      setStatus("Unable to copy booking link.");
+      setStatus(renderScalar("Unable to copy booking link."));
     }
   }
 
@@ -82,12 +84,12 @@ export default function OrgBookingPanel({ orgs }: { orgs: OrgLite[] }) {
       const res = await fetch(url);
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Availability test failed.");
+        setStatus(renderScalar(data.error || "Availability test failed."));
         return;
       }
-      setStatus(`Availability OK: ${data.meta?.totalSlots ?? data.slots?.length ?? 0} slots.`);
+      setStatus(renderScalar(`Availability OK: ${data.meta?.totalSlots ?? data.slots?.length ?? 0} slots.`));
     } catch {
-      setStatus("Availability test failed.");
+      setStatus(renderScalar("Availability test failed."));
     }
   }
 
@@ -100,7 +102,7 @@ export default function OrgBookingPanel({ orgs }: { orgs: OrgLite[] }) {
         </div>
         {status ? (
           <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs text-zinc-600">
-            {status}
+            {renderScalar(status)}
           </div>
         ) : null}
       </div>

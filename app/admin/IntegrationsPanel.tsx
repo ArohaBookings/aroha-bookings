@@ -1,12 +1,14 @@
 "use client";
 
 import React from "react";
+import { renderScalar } from "@/lib/ui/renderScalar";
 
 function buildWebhookUrl() {
   const base = (process.env.NEXT_PUBLIC_APP_URL || "").trim();
   if (!base) return "";
   return `${base.replace(/\/$/, "")}/api/webhooks/retell`;
 }
+
 
 export default function IntegrationsPanel() {
   const [globalZapierWebhookUrl, setGlobalZapierWebhookUrl] = React.useState("");
@@ -27,7 +29,7 @@ export default function IntegrationsPanel() {
           setGlobalZapierWebhookUrl(data.globalZapierWebhookUrl || "");
         }
       } catch {
-        if (!cancelled) setStatus("Failed to load global settings.");
+        if (!cancelled) setStatus(renderScalar("Failed to load global settings."));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -47,13 +49,13 @@ export default function IntegrationsPanel() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Failed to save.");
+        setStatus(renderScalar(data.error || "Failed to save."));
         return;
       }
       setGlobalZapierWebhookUrl(data.globalZapierWebhookUrl || "");
-      setStatus("Global Zapier URL saved.");
+      setStatus(renderScalar("Global Zapier URL saved."));
     } catch {
-      setStatus("Failed to save.");
+      setStatus(renderScalar("Failed to save."));
     }
   }
 
@@ -64,12 +66,12 @@ export default function IntegrationsPanel() {
       const res = await fetch("/api/admin/process-forward-queue", { method: "POST" });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Queue run failed.");
+        setStatus(renderScalar(data.error || "Queue run failed."));
         return;
       }
-      setStatus(`Queue processed: ${data.processed} (sent ${data.sent}, failed ${data.failed}).`);
+      setStatus(renderScalar(`Queue processed: ${data.processed} (sent ${data.sent}, failed ${data.failed}).`));
     } catch {
-      setStatus("Queue run failed.");
+      setStatus(renderScalar("Queue run failed."));
     } finally {
       setRunning(false);
     }
@@ -79,9 +81,9 @@ export default function IntegrationsPanel() {
     if (!webhookUrl) return;
     try {
       await navigator.clipboard.writeText(webhookUrl);
-      setStatus("Webhook URL copied.");
+      setStatus(renderScalar("Webhook URL copied."));
     } catch {
-      setStatus("Copy failed.");
+      setStatus(renderScalar("Copy failed."));
     }
   }
 
@@ -96,7 +98,7 @@ export default function IntegrationsPanel() {
         </div>
         {status ? (
           <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs text-zinc-600">
-            {status}
+            {renderScalar(status)}
           </div>
         ) : null}
       </div>

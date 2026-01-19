@@ -22,6 +22,6 @@ function isAuthorized(req: Request) {
 export async function POST(req: Request) {
   if (!isAuthorized(req)) return json({ ok: false, error: "Unauthorized" }, 401);
 
-  const result = await processForwardQueue(50);
+  const result = await processForwardQueue({ limit: 50 });
   return json({ ok: true, ...result });
 }

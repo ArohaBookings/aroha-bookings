@@ -48,11 +48,6 @@ export async function GET(req: Request) {
       orderBy: { updatedAt: "desc" },
       select: { accountEmail: true, expiresAt: true },
     }),
-    prisma.retellConnection.findFirst({
-      where: { orgId },
-      orderBy: { updatedAt: "desc" },
-      select: { agentId: true, apiKeyEncrypted: true, webhookSecret: true, active: true },
-    }),
     prisma.staffMember.count({ where: { orgId } }),
     prisma.appointment.findFirst({
       where: { orgId },
@@ -66,6 +61,11 @@ export async function GET(req: Request) {
           select: { createdAt: true },
         })
       : Promise.resolve(null),
+    prisma.retellConnection.findFirst({
+      where: { orgId },
+      orderBy: { updatedAt: "desc" },
+      select: { agentId: true, apiKeyEncrypted: true, webhookSecret: true, active: true },
+    }),
   ]);
 
   if (!org) return json({ ok: false, error: "Org not found" }, 404);

@@ -68,15 +68,18 @@ export default async function HealthPage() {
             {errors.length === 0 ? (
               <p className="text-sm text-zinc-600">No sync issues logged.</p>
             ) : (
-              errors.slice(0, 10).map((e: any, idx: number) => (
-                <div key={`${e.appointmentId || "unknown"}-${idx}`} className="rounded-xl border border-zinc-200 p-4">
-                  <p className="text-xs text-zinc-500">{e.ts ? new Date(e.ts).toLocaleString() : "Unknown time"}</p>
-                  <p className="mt-1 text-sm text-zinc-800">{e.error || "Sync failed"}</p>
-                  {e.appointmentId ? (
-                    <p className="mt-1 text-xs text-zinc-500">Appointment: {e.appointmentId}</p>
-                  ) : null}
-                </div>
-              ))
+              errors.slice(0, 10).map((e: any) => {
+                const key = `${e.appointmentId || "unknown"}-${e.ts || "no-ts"}-${e.error || "err"}`;
+                return (
+                  <div key={key} className="rounded-xl border border-zinc-200 p-4">
+                    <p className="text-xs text-zinc-500">{e.ts ? new Date(e.ts).toLocaleString() : "Unknown time"}</p>
+                    <p className="mt-1 text-sm text-zinc-800">{e.error || "Sync failed"}</p>
+                    {e.appointmentId ? (
+                      <p className="mt-1 text-xs text-zinc-500">Appointment: {e.appointmentId}</p>
+                    ) : null}
+                  </div>
+                );
+              })
             )}
           </div>
         </Card>

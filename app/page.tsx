@@ -20,6 +20,12 @@ export default function HomePage() {
               Pricing
             </a>
             <a
+              href="/login"
+              className="text-sm font-medium text-zinc-700 hover:text-black"
+            >
+              Log in
+            </a>
+            <a
               href="https://arohacalls.com"
               target="_blank"
               rel="noopener noreferrer"
@@ -53,6 +59,20 @@ export default function HomePage() {
               <li>• Email AI to tidy your inbox and follow up leads</li>
             </ul>
             <div className="mt-7 flex flex-wrap gap-3">
+              <a
+                href="/login"
+                className="bg-emerald-600 text-white px-6 py-3 rounded-md font-medium hover:bg-emerald-700"
+              >
+                Log in
+              </a>
+              <a
+                href="https://arohacalls.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="border border-emerald-600 px-6 py-3 rounded-md font-medium text-emerald-700 hover:bg-emerald-50"
+              >
+                Request access
+              </a>
               <a
                 href="https://arohacalls.com"
                 target="_blank"
@@ -112,6 +132,108 @@ export default function HomePage() {
                 </p>
               </div>
             </Card>
+          </div>
+        </div>
+      </section>
+
+      {/* FEATURES */}
+      <section id="features" className="max-w-6xl mx-auto px-6 pb-16">
+        <div className="flex items-end justify-between flex-wrap gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Features</p>
+            <h2 className="mt-2 text-3xl font-semibold">Everything your front desk should do — instantly.</h2>
+          </div>
+          <a
+            href="https://arohacalls.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm font-medium text-emerald-700 hover:text-emerald-900"
+          >
+            Book a demo →
+          </a>
+        </div>
+
+        <div className="mt-8 grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+          {[
+            {
+              title: "Calls inbox",
+              body: "Every call summarized, searchable, and deduplicated in real time.",
+            },
+            {
+              title: "Client Memory",
+              body: "Preferences, tone, and history saved per customer so the AI never forgets.",
+            },
+            {
+              title: "Email AI",
+              body: "Drafts follow-ups, rescues missed calls, and keeps your inbox clean.",
+            },
+            {
+              title: "Messages hub (coming soon)",
+              body: "A unified place for SMS, WhatsApp, and social messages.",
+            },
+            {
+              title: "Zapier automation",
+              body: "Forward call events into any CRM or workflow in seconds.",
+            },
+            {
+              title: "Calendar control",
+              body: "Bookings land in your calendar with business rules enforced.",
+            },
+          ].map((feature) => (
+            <Card key={feature.title} className="p-5">
+              <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">{feature.title}</p>
+              <p className="mt-3 text-sm text-zinc-700">{feature.body}</p>
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      {/* PROOF COUNTERS */}
+      <section className="bg-zinc-50 border-y border-zinc-200">
+        <div className="max-w-6xl mx-auto px-6 py-14 grid gap-6 md:grid-cols-3">
+          {[
+            { label: "Avg call handled", value: "< 20s" },
+            { label: "Bookings captured", value: "94%" },
+            { label: "Time saved weekly", value: "8+ hrs" },
+          ].map((stat) => (
+            <Card key={stat.label} className="p-5 text-center">
+              <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">{stat.label}</p>
+              <p className="mt-3 text-3xl font-semibold text-zinc-900">{stat.value}</p>
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      {/* QUESTIONS (Accordion) */}
+      <section className="max-w-6xl mx-auto px-6 py-16">
+        <div className="grid gap-8 md:grid-cols-[1.2fr_0.8fr]">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Why it works</p>
+            <h2 className="mt-2 text-3xl font-semibold">Clear answers before you sign in.</h2>
+            <p className="mt-3 text-sm text-zinc-600">
+              Everything is deterministic, audited, and synced to your calendar.
+            </p>
+          </div>
+          <div className="space-y-3">
+            {[
+              {
+                title: "How do calls become bookings?",
+                body: "The AI checks availability, confirms the slot, and writes the booking straight into your calendar.",
+              },
+              {
+                title: "Can I control business hours?",
+                body: "Yes. Set business hours and buffers, and the AI will respect them automatically.",
+              },
+              {
+                title: "What if the AI is unsure?",
+                body: "It escalates to a draft or follows your rules, so nothing goes live without confidence.",
+              },
+            ].map((item) => (
+              <details key={item.title} className="rounded-xl border border-zinc-200 bg-white p-4">
+                <summary className="cursor-pointer text-sm font-semibold text-zinc-900">{item.title}</summary>
+                <p className="mt-2 text-sm text-zinc-600">{item.body}</p>
+              </details>
+            ))}
           </div>
         </div>
       </section>

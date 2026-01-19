@@ -204,6 +204,7 @@ export const requireFeature = requireOrgFeature;
 export async function requireSessionOrgFeature(feature: keyof EntitlementFeatures) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) {
+    console.warn("[entitlements] reject: no session for feature", feature);
     return { ok: false, status: 401, error: "Not authenticated" } as const;
   }
   const membership = await prisma.membership.findFirst({
@@ -212,10 +213,12 @@ export async function requireSessionOrgFeature(feature: keyof EntitlementFeature
     orderBy: { orgId: "asc" },
   });
   if (!membership?.orgId) {
+    console.warn("[entitlements] reject: no org for feature", feature, session.user.email);
     return { ok: false, status: 400, error: "No organization" } as const;
   }
   const check = await requireOrgFeature(membership.orgId, feature);
   if (!check.ok) {
+    console.warn("[entitlements] reject: feature disabled", feature, membership.orgId, session.user.email);
     return { ok: false, status: check.status, error: check.error, entitlements: check.entitlements } as const;
   }
   return { ok: true, orgId: membership.orgId, entitlements: check.entitlements } as const;

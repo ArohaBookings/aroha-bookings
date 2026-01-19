@@ -567,7 +567,11 @@ export async function POST(req: Request) {
       body: String(entry.content || ""),
       keywords: Array.isArray(entry.tags) ? entry.tags : [],
     }));
-    const snippets = normalizeSnippets([...(orgSettingsData.emailSnippets || []), ...kbSnippets]);
+    const emailSnippetsArr = Array.isArray((orgSettingsData as any)?.emailSnippets)
+      ? (orgSettingsData as any).emailSnippets
+      : [];
+    const kbSnippetsArr = Array.isArray(kbSnippets) ? kbSnippets : [];
+    const snippets = normalizeSnippets([...emailSnippetsArr, ...kbSnippetsArr]);
     const voiceInstruction = [
       settings.instructionPrompt || "",
       forbidden.length ? `Forbidden phrases: ${forbidden.join(", ")}` : "",
@@ -805,7 +809,7 @@ export async function POST(req: Request) {
 
         const isBlocked = c.risk === "blocked";
         const isNeedsReview = c.risk === "needs_review";
-        const automationPaused = inboxSettings.automationPaused;
+        const automationPaused = Boolean((inboxSettings as any)?.automationPaused);
         const autoSendEligible =
           !automationPaused &&
           effectiveInboxSettings.enableAutoSend &&
@@ -857,6 +861,9 @@ export async function POST(req: Request) {
           ? "queued_for_review"
           : "queued_for_review";
 
+        if (!orgId) {
+          return NextResponse.json({ ok: false, error: "Missing orgId" }, { status: 400 });
+        }
         const log = await prisma.emailAILog.create({
           data: {
             orgId,

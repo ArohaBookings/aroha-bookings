@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { renderScalar } from "@/lib/ui/renderScalar";
 
 type OrgLite = { id: string; name: string };
 
@@ -56,6 +57,49 @@ type OrgMasterResponse = {
   error?: string;
 };
 
+type DiagnosticsResponse = {
+  ok: boolean;
+  traceId?: string;
+  data?: {
+    db: { ok: boolean };
+    retell: {
+      ok: boolean;
+      hasConnection: boolean;
+      agentIdPresent: boolean;
+      apiKeyPresent: boolean;
+      canDecrypt: boolean;
+      lastWebhookAt: string | null;
+      lastWebhookError: string | null;
+      lastWebhookErrorAt: string | null;
+      lastSyncAt: string | null;
+      lastSyncError: string | null;
+      lastSyncTraceId: string | null;
+      lastSyncHttpStatus: number | null;
+      lastSyncEndpointTried: string | null;
+    };
+    calls: {
+      ok: boolean;
+      callLogCount24h: number;
+      callLogCountTotal: number;
+      lastCallAt: string | null;
+      pendingForwardJobs: number;
+      failedForwardJobs: number;
+    };
+    google: {
+      ok: boolean;
+      connected: boolean;
+      calendarId: string | null;
+      accountEmail: string | null;
+      expiresAt: string | null;
+      needsReconnect: boolean;
+      lastSyncAt: string | null;
+      lastError: string | null;
+    };
+    server: { now: string; env: string };
+  };
+  error?: string;
+};
+
 const DEFAULT_FEATURES = [
   "booking",
   "calls",
@@ -66,10 +110,13 @@ const DEFAULT_FEATURES = [
   "clientSelfService",
 ];
 
-function formatDateTime(value?: string | null) {
+function formatDateTime(value?: unknown) {
   if (!value) return "—";
+  if (typeof value !== "string" && typeof value !== "number" && !(value instanceof Date)) {
+    return renderScalar(value);
+  }
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
+  if (Number.isNaN(d.getTime())) return renderScalar(value);
   return d.toLocaleString();
 }
 
@@ -83,11 +130,19 @@ function formatError(err: unknown) {
   return `${detail}${at ? ` · ${new Date(at).toLocaleString()}` : ""}`;
 }
 
+function statusPill(ok: boolean | null) {
+  if (ok === null) return "bg-slate-100 text-slate-600 border-slate-200";
+  return ok
+    ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+    : "bg-amber-100 text-amber-700 border-amber-200";
+}
+
 export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
   const [orgId, setOrgId] = React.useState(orgs[0]?.id || "");
   const [info, setInfo] = React.useState<OrgMasterResponse | null>(null);
   const [status, setStatus] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
+  const [updating, setUpdating] = React.useState(false);
   const [features, setFeatures] = React.useState<Record<string, boolean>>({});
   const [limits, setLimits] = React.useState<{
     bookingsPerMonth: string;
@@ -104,12 +159,45 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
   const [retellActive, setRetellActive] = React.useState(true);
   const [retellZapierWebhookUrl, setRetellZapierWebhookUrl] = React.useState("");
   const [retellLastWebhookAt, setRetellLastWebhookAt] = React.useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = React.useState<DiagnosticsResponse["data"] | null>(null);
+  const [diagnosticsTraceId, setDiagnosticsTraceId] = React.useState<string | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = React.useState(false);
+  const [diagnosticsError, setDiagnosticsError] = React.useState<string | null>(null);
   const [globalControls, setGlobalControls] = React.useState<{
     disableAutoSendAll: boolean;
     disableMessagesHubAll: boolean;
     disableEmailAIAll: boolean;
     disableAiSummariesAll: boolean;
   } | null>(null);
+  const loadAbortRef = React.useRef<AbortController | null>(null);
+  const loadRequestRef = React.useRef(0);
+  const actionAbortRef = React.useRef<AbortController | null>(null);
+  const globalAbortRef = React.useRef<AbortController | null>(null);
+  const diagnosticsAbortRef = React.useRef<AbortController | null>(null);
+  const mountedRef = React.useRef(true);
+
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      loadAbortRef.current?.abort();
+      actionAbortRef.current?.abort();
+      globalAbortRef.current?.abort();
+      diagnosticsAbortRef.current?.abort();
+    };
+  }, []);
+
+  const safeSet = React.useCallback((fn: () => void) => {
+    if (!mountedRef.current) return;
+    fn();
+  }, []);
+
+  const newActionController = React.useCallback(() => {
+    if (actionAbortRef.current) actionAbortRef.current.abort();
+    const controller = new AbortController();
+    actionAbortRef.current = controller;
+    return controller;
+  }, []);
 
   const appUrl = (process.env.NEXT_PUBLIC_APP_URL || "").trim();
   const bookingUrl = info?.org?.slug && appUrl ? `${appUrl.replace(/\/$/, "")}/book/${info.org.slug}` : "";
@@ -117,39 +205,59 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
 
   async function loadInfo(nextOrgId: string) {
     if (!nextOrgId) return;
-    setLoading(true);
-    setStatus(null);
+    loadRequestRef.current += 1;
+    const requestId = loadRequestRef.current;
+    if (loadAbortRef.current) loadAbortRef.current.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    safeSet(() => {
+      setLoading(true);
+      setUpdating(true);
+      setStatus(renderScalar("Updating..."));
+    });
     try {
       const res = await fetch(`/api/admin/org-master?orgId=${encodeURIComponent(nextOrgId)}`, {
         cache: "no-store",
+        signal: controller.signal,
       });
       const data = (await res.json()) as OrgMasterResponse;
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Failed to load org details.");
-        setInfo(null);
+        if (requestId !== loadRequestRef.current) return;
+        safeSet(() => {
+          setStatus(renderScalar(data.error || "Failed to load org details."));
+        });
         return;
       }
-      setInfo(data);
-      setFeatures(data.planFeatures || {});
-      setEntitlements(data.entitlements || null);
-      setPlanNotes(data.planNotes || "");
-      setSelectedPlan(data.org?.plan || "PROFESSIONAL");
-      setRetellAgentId(data.retell?.agentId || "");
-      setRetellApiKey(data.retell?.apiKeyEncrypted || "");
-      setRetellWebhookSecret(data.retell?.webhookSecret || "");
-      setRetellActive(Boolean(data.retell?.active));
-      setRetellZapierWebhookUrl(data.retell?.zapierWebhookUrl || "");
-      setRetellLastWebhookAt(data.retell?.lastWebhookAt || null);
-      setLimits({
-        bookingsPerMonth: data.planLimits?.bookingsPerMonth?.toString() || "",
-        staffCount: data.planLimits?.staffCount?.toString() || "",
-        automations: data.planLimits?.automations?.toString() || "",
+      if (requestId !== loadRequestRef.current) return;
+      safeSet(() => {
+        setInfo(data);
+        setFeatures(data.planFeatures || {});
+        setEntitlements(data.entitlements || null);
+        setPlanNotes(data.planNotes || "");
+        setSelectedPlan(data.org?.plan || "PROFESSIONAL");
+        setRetellAgentId(data.retell?.agentId || "");
+        setRetellApiKey(data.retell?.apiKeyEncrypted || "");
+        setRetellWebhookSecret(data.retell?.webhookSecret || "");
+        setRetellActive(Boolean(data.retell?.active));
+        setRetellZapierWebhookUrl(data.retell?.zapierWebhookUrl || "");
+        setRetellLastWebhookAt(data.retell?.lastWebhookAt || null);
+        setLimits({
+          bookingsPerMonth: data.planLimits?.bookingsPerMonth?.toString() || "",
+          staffCount: data.planLimits?.staffCount?.toString() || "",
+          automations: data.planLimits?.automations?.toString() || "",
+        });
       });
     } catch {
-      setStatus("Failed to load org details.");
-      setInfo(null);
+      if (requestId !== loadRequestRef.current) return;
+      safeSet(() => {
+        setStatus(renderScalar("Failed to load org details."));
+      });
     } finally {
-      setLoading(false);
+      if (requestId !== loadRequestRef.current) return;
+      safeSet(() => {
+        setLoading(false);
+        setUpdating(false);
+      });
     }
   }
 
@@ -158,40 +266,45 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
   }, [orgId]);
 
   React.useEffect(() => {
-    let cancelled = false;
+    if (globalAbortRef.current) globalAbortRef.current.abort();
+    const controller = new AbortController();
+    globalAbortRef.current = controller;
     (async () => {
       try {
-        const res = await fetch("/api/admin/global-controls", { cache: "no-store" });
+        const res = await fetch("/api/admin/global-controls", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
         const data = await res.json();
-        if (!cancelled && res.ok && data.ok) {
-          setGlobalControls(data.controls);
+        if (res.ok && data.ok) {
+          safeSet(() => setGlobalControls(data.controls));
         }
       } catch {
-        if (!cancelled) setGlobalControls(null);
+        safeSet(() => setGlobalControls(null));
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, []);
 
   async function saveFeatures(next: Record<string, boolean>) {
     if (!orgId) return;
-    setStatus(null);
+    safeSet(() => setStatus(null));
+    const controller = newActionController();
     try {
       const res = await fetch("/api/admin/org-features", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({ orgId, planFeatures: next }),
       });
       const data = (await res.json()) as { ok: boolean; error?: string };
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Failed to update features.");
+        safeSet(() => setStatus(renderScalar(data.error || "Failed to update features.")));
         return;
       }
-      setStatus("Features updated.");
+      safeSet(() => setStatus(renderScalar("Features updated.")));
     } catch {
-      setStatus("Failed to update features.");
+      safeSet(() => setStatus(renderScalar("Failed to update features.")));
     }
   }
 
@@ -216,11 +329,13 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
 
   async function saveLimits(next: { bookingsPerMonth: string; staffCount: string; automations: string }) {
     if (!orgId) return;
-    setStatus(null);
+    safeSet(() => setStatus(null));
+    const controller = newActionController();
     try {
       const res = await fetch("/api/admin/org-limits", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           orgId,
           planLimits: {
@@ -232,64 +347,72 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
       });
       const data = (await res.json()) as { ok: boolean; error?: string };
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Failed to update limits.");
+        safeSet(() => setStatus(renderScalar(data.error || "Failed to update limits.")));
         return;
       }
-      setStatus("Limits updated.");
+      safeSet(() => setStatus(renderScalar("Limits updated.")));
     } catch {
-      setStatus("Failed to update limits.");
+      safeSet(() => setStatus(renderScalar("Failed to update limits.")));
     }
   }
 
   async function saveEntitlements(next: OrgMasterResponse["entitlements"]) {
     if (!orgId || !next) return;
-    setStatus(null);
+    safeSet(() => setStatus(null));
+    const controller = newActionController();
     try {
       const res = await fetch("/api/admin/org-entitlements", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({ orgId, entitlements: next }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Failed to update entitlements.");
+        safeSet(() => setStatus(renderScalar(data.error || "Failed to update entitlements.")));
         return;
       }
-      setEntitlements(data.entitlements || next);
-      setStatus("Entitlements updated.");
+      safeSet(() => {
+        setEntitlements(data.entitlements || next);
+        setStatus(renderScalar("Entitlements updated."));
+      });
     } catch {
-      setStatus("Failed to update entitlements.");
+      safeSet(() => setStatus(renderScalar("Failed to update entitlements.")));
     }
   }
 
   async function savePlan() {
     if (!orgId) return;
-    setStatus(null);
+    safeSet(() => setStatus(null));
+    const controller = newActionController();
     try {
       const res = await fetch("/api/admin/org-plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({ orgId, plan: selectedPlan, planNotes }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Failed to update plan.");
+        safeSet(() => setStatus(renderScalar(data.error || "Failed to update plan.")));
         return;
       }
-      setStatus("Plan updated.");
+      safeSet(() => setStatus(renderScalar("Plan updated.")));
       await loadInfo(orgId);
     } catch {
-      setStatus("Failed to update plan.");
+      safeSet(() => setStatus(renderScalar("Failed to update plan.")));
     }
   }
 
   async function saveRetellSettings() {
     if (!orgId) return;
-    setStatus(null);
+    safeSet(() => setStatus(null));
+    const controller = newActionController();
     try {
       const res = await fetch("/api/admin/org-master", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           orgId,
           retell: {
@@ -303,33 +426,37 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Failed to update Retell settings.");
+        safeSet(() => setStatus(renderScalar(data.error || "Failed to update Retell settings.")));
         return;
       }
-      setStatus("Retell settings updated.");
+      safeSet(() => setStatus(renderScalar("Retell settings updated.")));
       await loadInfo(orgId);
     } catch {
-      setStatus("Failed to update Retell settings.");
+      safeSet(() => setStatus(renderScalar("Failed to update Retell settings.")));
     }
   }
 
   async function saveGlobalControls(next: NonNullable<typeof globalControls>) {
-    setStatus(null);
+    safeSet(() => setStatus(null));
+    const controller = newActionController();
     try {
       const res = await fetch("/api/admin/global-controls", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify(next),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Failed to update global controls.");
+        safeSet(() => setStatus(renderScalar(data.error || "Failed to update global controls.")));
         return;
       }
-      setGlobalControls(data.controls || next);
-      setStatus("Global controls updated.");
+      safeSet(() => {
+        setGlobalControls(data.controls || next);
+        setStatus(renderScalar("Global controls updated."));
+      });
     } catch {
-      setStatus("Failed to update global controls.");
+      safeSet(() => setStatus(renderScalar("Failed to update global controls.")));
     }
   }
 
@@ -337,9 +464,9 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
     if (!bookingUrl) return;
     try {
       await navigator.clipboard.writeText(bookingUrl);
-      setStatus("Booking link copied.");
+      safeSet(() => setStatus(renderScalar("Booking link copied.")));
     } catch {
-      setStatus("Unable to copy booking link.");
+      safeSet(() => setStatus(renderScalar("Unable to copy booking link.")));
     }
   }
 
@@ -351,60 +478,181 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
       `/api/public/availability?orgSlug=${encodeURIComponent(info.org.slug)}` +
       `&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
     try {
-      const res = await fetch(url);
+      const controller = newActionController();
+      const res = await fetch(url, { signal: controller.signal });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Availability test failed.");
+        safeSet(() => setStatus(renderScalar(data.error || "Availability test failed.")));
         return;
       }
-      setStatus(`Availability OK: ${data.meta?.totalSlots ?? data.slots?.length ?? 0} slots.`);
+      safeSet(() =>
+        setStatus(renderScalar(`Availability OK: ${data.meta?.totalSlots ?? data.slots?.length ?? 0} slots.`)),
+      );
     } catch {
-      setStatus("Availability test failed.");
+      safeSet(() => setStatus(renderScalar("Availability test failed.")));
     }
   }
 
   async function testBooking() {
     if (!orgId) return;
     try {
-      const res = await fetch(`/api/admin/test-booking?orgId=${encodeURIComponent(orgId)}`);
+      const controller = newActionController();
+      const res = await fetch(`/api/admin/test-booking?orgId=${encodeURIComponent(orgId)}`, {
+        signal: controller.signal,
+      });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Booking test failed.");
+        safeSet(() => setStatus(renderScalar(data.error || "Booking test failed.")));
         return;
       }
-      setStatus(`Booking test OK: ${data.service?.name || "service"} @ ${data.slot?.start}`);
+      safeSet(() =>
+        setStatus(renderScalar(`Booking test OK: ${data.service?.name || "service"} @ ${data.slot?.start}`)),
+      );
     } catch {
-      setStatus("Booking test failed.");
+      safeSet(() => setStatus(renderScalar("Booking test failed.")));
     }
   }
 
   async function testSync() {
     if (!orgId) return;
     try {
-      const res = await fetch(`/api/admin/test-sync?orgId=${encodeURIComponent(orgId)}`);
+      const controller = newActionController();
+      const res = await fetch(`/api/admin/test-sync?orgId=${encodeURIComponent(orgId)}`, {
+        signal: controller.signal,
+      });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Sync dry-run failed.");
+        safeSet(() => setStatus(renderScalar(data.error || "Sync dry-run failed.")));
         return;
       }
-      setStatus(`Sync dry-run: ${data.action} (${data.reason})`);
+      const google = data.google as { connected?: boolean; needsReconnect?: boolean } | undefined;
+      const googleNote = google
+        ? google.needsReconnect
+          ? "Google reconnect needed"
+          : "Google OK"
+        : "Google status unknown";
+      safeSet(() => setStatus(renderScalar(`Sync dry-run: ${data.action} (${data.reason}) · ${googleNote}`)));
     } catch {
-      setStatus("Sync dry-run failed.");
+      safeSet(() => setStatus(renderScalar("Sync dry-run failed.")));
+    }
+  }
+
+  async function runDiagnostics() {
+    if (!orgId) return;
+    if (diagnosticsAbortRef.current) diagnosticsAbortRef.current.abort();
+    const controller = new AbortController();
+    diagnosticsAbortRef.current = controller;
+    safeSet(() => {
+      setDiagnosticsLoading(true);
+      setDiagnosticsError(null);
+    });
+    try {
+      const res = await fetch(`/api/admin/diagnostics?orgId=${encodeURIComponent(orgId)}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const data = (await res.json()) as DiagnosticsResponse;
+      if (!res.ok || !data.ok) {
+        safeSet(() => {
+          setDiagnostics(null);
+          setDiagnosticsTraceId(data.traceId || null);
+          setDiagnosticsError(renderScalar(data.error || "Diagnostics failed."));
+        });
+        return;
+      }
+      safeSet(() => {
+        setDiagnostics(data.data || null);
+        setDiagnosticsTraceId(data.traceId || null);
+      });
+    } catch {
+      safeSet(() => {
+        setDiagnostics(null);
+        setDiagnosticsError("Diagnostics failed.");
+      });
+    } finally {
+      safeSet(() => setDiagnosticsLoading(false));
+    }
+  }
+
+  async function runCallsSyncNow() {
+    if (!orgId) return;
+    try {
+      const controller = newActionController();
+      const res = await fetch("/api/org/calls/sync", {
+        method: "POST",
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        safeSet(() => setStatus(renderScalar("Calls sync failed.")));
+        return;
+      }
+      safeSet(() => setStatus(renderScalar("Calls sync started.")));
+      await runDiagnostics();
+    } catch {
+      safeSet(() => setStatus(renderScalar("Calls sync failed.")));
+    }
+  }
+
+  async function refreshDiagnostics() {
+    try {
+      await fetch("/api/org/calls/sync", { cache: "no-store" });
+    } catch {
+      // ignore sync meta refresh failures
+    }
+    await loadInfo(orgId);
+    await runDiagnostics();
+  }
+
+  async function resetCallLogs() {
+    if (!orgId) return;
+    try {
+      const controller = newActionController();
+      const res = await fetch("/api/admin/calls/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({ orgId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        safeSet(() => setStatus(renderScalar(data.error || "Call reset failed.")));
+        return;
+      }
+      safeSet(() => setStatus(renderScalar(`Call logs cleared (${data.deletedCallLogs ?? 0}).`)));
+      await refreshDiagnostics();
+    } catch {
+      safeSet(() => setStatus(renderScalar("Call reset failed.")));
+    }
+  }
+
+  async function copyDiagnostics() {
+    if (!diagnostics) return;
+    try {
+      const payload = { traceId: diagnosticsTraceId, diagnostics };
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      safeSet(() => setStatus(renderScalar("Diagnostics copied.")));
+    } catch {
+      safeSet(() => setStatus(renderScalar("Unable to copy diagnostics.")));
     }
   }
 
   async function runIsolationCheck() {
-    setStatus(null);
+    safeSet(() => setStatus(null));
     try {
-      const res = await fetch("/api/admin/org-isolation-check", { cache: "no-store" });
+      const controller = newActionController();
+      const res = await fetch("/api/admin/org-isolation-check", {
+        cache: "no-store",
+        signal: controller.signal,
+      });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setStatus(data.error || "Isolation check failed.");
+        safeSet(() => setStatus(renderScalar(data.error || "Isolation check failed.")));
         return;
       }
-      setStatus(`Isolation check OK: ${data.summary?.length || 0} orgs scanned.`);
+      safeSet(() => setStatus(renderScalar(`Isolation check OK: ${data.summary?.length || 0} orgs scanned.`)));
     } catch {
-      setStatus("Isolation check failed.");
+      safeSet(() => setStatus(renderScalar("Isolation check failed.")));
     }
   }
 
@@ -424,7 +672,7 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
         </div>
         {status ? (
           <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs text-zinc-600">
-            {status}
+            {renderScalar(status)}
           </div>
         ) : null}
       </div>
@@ -443,6 +691,9 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
               </option>
             ))}
           </select>
+          {updating && (
+            <div className="mt-1 text-xs text-amber-600">Updating…</div>
+          )}
         </label>
 
         <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm">
@@ -807,6 +1058,139 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
             </div>
           </div>
         </div>
+      </div>
+
+      <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-4 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Diagnostics / health</div>
+            <p className="mt-1 text-xs text-zinc-500">
+              One-click snapshot for Retell, calls, and Google Calendar connectivity.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={runCallsSyncNow}
+              disabled={!orgId || diagnosticsLoading}
+              className="rounded-md border border-zinc-300 px-3 py-2 text-xs text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+            >
+              Run calls sync now
+            </button>
+            <button
+              type="button"
+              onClick={refreshDiagnostics}
+              disabled={!orgId || diagnosticsLoading}
+              className="rounded-md border border-zinc-300 px-3 py-2 text-xs text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+            >
+              {diagnosticsLoading ? "Refreshing..." : "Refresh diagnostics"}
+            </button>
+            <button
+              type="button"
+              onClick={resetCallLogs}
+              disabled={!orgId || diagnosticsLoading}
+              className="rounded-md border border-zinc-300 px-3 py-2 text-xs text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+            >
+              Reset call logs
+            </button>
+            <button
+              type="button"
+              onClick={copyDiagnostics}
+              disabled={!diagnostics}
+              className="rounded-md border border-zinc-300 px-3 py-2 text-xs text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+            >
+              Copy diagnostics JSON
+            </button>
+          </div>
+        </div>
+        {diagnosticsError ? (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            {renderScalar(diagnosticsError)}
+            {diagnosticsTraceId ? ` · Trace ${diagnosticsTraceId}` : ""}
+          </div>
+        ) : null}
+        {!diagnostics ? (
+          <div className="text-xs text-zinc-500">Run diagnostics to see the latest health snapshot.</div>
+        ) : (
+          <div className="grid gap-3 text-xs md:grid-cols-2">
+            <div className="space-y-2 rounded-lg border border-zinc-200 p-3">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-zinc-700">Retell</span>
+                <span className={`rounded-full border px-2 py-0.5 ${statusPill(diagnostics.retell.ok)}`}>
+                  {diagnostics.retell.ok ? "OK" : "Attention"}
+                </span>
+              </div>
+              <div className="text-zinc-500">Agent: {renderScalar(diagnostics.retell.agentIdPresent ? "Set" : "Missing")}</div>
+              <div className="text-zinc-500">API key: {renderScalar(diagnostics.retell.apiKeyPresent ? "Set" : "Missing")}</div>
+              <div className="text-zinc-500">Last webhook: {formatDateTime(diagnostics.retell.lastWebhookAt)}</div>
+              {diagnostics.retell.lastWebhookError ? (
+                <div className="text-amber-700">
+                  Webhook error: {renderScalar(diagnostics.retell.lastWebhookError)}
+                  {diagnostics.retell.lastWebhookErrorAt
+                    ? ` · ${formatDateTime(diagnostics.retell.lastWebhookErrorAt)}`
+                    : ""}
+                </div>
+              ) : null}
+              <div className="text-zinc-500">Last sync: {formatDateTime(diagnostics.retell.lastSyncAt)}</div>
+              <div className="text-zinc-500">
+                HTTP status: {renderScalar(diagnostics.retell.lastSyncHttpStatus)}
+              </div>
+              <div className="text-zinc-500">
+                Endpoint: {renderScalar(diagnostics.retell.lastSyncEndpointTried)}
+              </div>
+              {diagnostics.retell.lastSyncError ? (
+                <div className="text-amber-700">
+                  Sync error: {renderScalar(diagnostics.retell.lastSyncError)}
+                  {diagnostics.retell.lastSyncTraceId ? ` · Trace ${diagnostics.retell.lastSyncTraceId}` : ""}
+                </div>
+              ) : null}
+            </div>
+            <div className="space-y-2 rounded-lg border border-zinc-200 p-3">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-zinc-700">Calls</span>
+                <span className={`rounded-full border px-2 py-0.5 ${statusPill(diagnostics.calls.ok)}`}>
+                  {diagnostics.calls.ok ? "OK" : "Attention"}
+                </span>
+              </div>
+              <div className="text-zinc-500">Calls (24h): {diagnostics.calls.callLogCount24h}</div>
+              <div className="text-zinc-500">Calls (total): {diagnostics.calls.callLogCountTotal}</div>
+              <div className="text-zinc-500">Last call: {formatDateTime(diagnostics.calls.lastCallAt)}</div>
+              <div className="text-zinc-500">Pending forwards: {diagnostics.calls.pendingForwardJobs}</div>
+              <div className="text-zinc-500">Failed forwards: {diagnostics.calls.failedForwardJobs}</div>
+            </div>
+            <div className="space-y-2 rounded-lg border border-zinc-200 p-3">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-zinc-700">Google Calendar</span>
+                <span className={`rounded-full border px-2 py-0.5 ${statusPill(diagnostics.google.ok)}`}>
+                  {diagnostics.google.ok ? "OK" : "Attention"}
+                </span>
+              </div>
+              <div className="text-zinc-500">Connected: {renderScalar(diagnostics.google.connected)}</div>
+              <div className="text-zinc-500">Calendar ID: {renderScalar(diagnostics.google.calendarId)}</div>
+              <div className="text-zinc-500">Account: {renderScalar(diagnostics.google.accountEmail)}</div>
+              <div className="text-zinc-500">Token expires: {formatDateTime(diagnostics.google.expiresAt)}</div>
+              {diagnostics.google.needsReconnect ? (
+                <div className="text-amber-700">Needs reconnect</div>
+              ) : null}
+              {diagnostics.google.lastError ? (
+                <div className="text-amber-700">Last error: {renderScalar(diagnostics.google.lastError)}</div>
+              ) : null}
+            </div>
+            <div className="space-y-2 rounded-lg border border-zinc-200 p-3">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-zinc-700">Server</span>
+                <span className={`rounded-full border px-2 py-0.5 ${statusPill(diagnostics.db.ok)}`}>
+                  {diagnostics.db.ok ? "OK" : "Attention"}
+                </span>
+              </div>
+              <div className="text-zinc-500">Now: {formatDateTime(diagnostics.server.now)}</div>
+              <div className="text-zinc-500">Env: {renderScalar(diagnostics.server.env)}</div>
+              {diagnosticsTraceId ? (
+                <div className="text-zinc-500">Trace: {renderScalar(diagnosticsTraceId)}</div>
+              ) : null}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-4 space-y-4">

@@ -3,7 +3,12 @@
 import { NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/db";
-import { parseRetellPayload, touchLastWebhook, upsertRetellCall } from "@/lib/retell/ingest";
+import {
+  parseRetellPayload,
+  touchLastWebhook,
+  touchLastWebhookError,
+  upsertRetellCall,
+} from "@/lib/retell/ingest";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -73,8 +78,10 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ provider: string; orgId: string }> }
 ) {
+  let scopedOrgId: string | null = null;
   try {
     const { provider, orgId } = await params;
+    scopedOrgId = orgId;
     const providerKey = (provider || "").toLowerCase();
 
     const ip =
@@ -131,6 +138,14 @@ export async function POST(
     return NextResponse.json({ ok: true });
   } catch (e: unknown) {
     console.error("voice.webhook error:", e);
+    if (scopedOrgId) {
+      const message = e instanceof Error ? e.message : "Webhook error";
+      try {
+        await touchLastWebhookError(scopedOrgId, message);
+      } catch {
+        // ignore error tracking failures
+      }
+    }
     return NextResponse.json({ ok: false, error: "Server error" }, { status: 500 });
   }
 }

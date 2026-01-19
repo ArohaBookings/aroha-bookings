@@ -5,6 +5,7 @@ import { DEMO_MESSAGES } from "@/lib/messages/demo";
 import { resolveBookingHolds } from "@/lib/booking/holds";
 
 export type TimelineEvent = {
+  id: string;
   type: string;
   at: string;
   detail: string;
@@ -31,6 +32,7 @@ export async function buildAppointmentTimeline(orgId: string, appointmentId: str
 
   const events: TimelineEvent[] = [];
   events.push({
+    id: `appointment:${appt.id}:created`,
     type: "CREATED",
     at: appt.createdAt.toISOString(),
     detail: `Created (${appt.source || "manual"}).`,
@@ -38,6 +40,7 @@ export async function buildAppointmentTimeline(orgId: string, appointmentId: str
 
   if (appt.source === "online") {
     events.push({
+      id: `appointment:${appt.id}:booked_online`,
       type: "BOOKED_ONLINE",
       at: appt.createdAt.toISOString(),
       detail: "Booked online by client.",
@@ -47,6 +50,7 @@ export async function buildAppointmentTimeline(orgId: string, appointmentId: str
   const call = appt.callLogs?.[0];
   if (call?.startedAt) {
     events.push({
+      id: `appointment:${appt.id}:booked_call:${call.callId || call.startedAt?.toISOString() || "unknown"}`,
       type: "BOOKED_BY_CALL",
       at: call.startedAt.toISOString(),
       detail: `Booked via call ${call.callId}.`,
@@ -55,6 +59,7 @@ export async function buildAppointmentTimeline(orgId: string, appointmentId: str
 
   if (appt.updatedAt && appt.updatedAt.getTime() !== appt.createdAt.getTime()) {
     events.push({
+      id: `appointment:${appt.id}:updated:${appt.updatedAt.toISOString()}`,
       type: "UPDATED",
       at: appt.updatedAt.toISOString(),
       detail: "Appointment updated.",
@@ -63,6 +68,7 @@ export async function buildAppointmentTimeline(orgId: string, appointmentId: str
 
   if (appt.cancelledAt) {
     events.push({
+      id: `appointment:${appt.id}:cancelled:${appt.cancelledAt.toISOString()}`,
       type: "CANCELLED",
       at: appt.cancelledAt.toISOString(),
       detail: `Cancelled by ${appt.cancelledBy || "system"}.`,
@@ -71,6 +77,7 @@ export async function buildAppointmentTimeline(orgId: string, appointmentId: str
 
   if (appt.syncedAt) {
     events.push({
+      id: `appointment:${appt.id}:synced:${appt.syncedAt.toISOString()}`,
       type: "SYNCED",
       at: appt.syncedAt.toISOString(),
       detail: appt.externalProvider
@@ -79,6 +86,7 @@ export async function buildAppointmentTimeline(orgId: string, appointmentId: str
     });
   } else if (appt.externalProvider) {
     events.push({
+      id: `appointment:${appt.id}:sync_pending:${appt.updatedAt.toISOString()}`,
       type: "SYNC_PENDING",
       at: appt.updatedAt.toISOString(),
       detail: "Sync pending.",
@@ -131,6 +139,7 @@ export async function buildCustomerTimeline(input: {
 
   if (customer?.createdAt) {
     events.push({
+      id: `customer:${customer.id || "unknown"}:created`,
       type: "CUSTOMER_CREATED",
       at: customer.createdAt.toISOString(),
       detail: "Customer profile created.",
@@ -196,6 +205,7 @@ export async function buildCustomerTimeline(input: {
 
   appointments.forEach((appt) => {
     events.push({
+      id: `appointment:${appt.id}:booking`,
       type: "BOOKING",
       at: appt.startsAt.toISOString(),
       detail: `${appt.service?.name ?? "Service"} with ${appt.staff?.name ?? "staff"} (${
@@ -204,6 +214,7 @@ export async function buildCustomerTimeline(input: {
     });
     if (appt.status === "CANCELLED") {
       events.push({
+        id: `appointment:${appt.id}:cancelled`,
         type: "CANCELLED",
         at: appt.startsAt.toISOString(),
         detail: "Appointment cancelled.",
@@ -211,6 +222,7 @@ export async function buildCustomerTimeline(input: {
     }
     if (appt.status === "NO_SHOW") {
       events.push({
+        id: `appointment:${appt.id}:no_show`,
         type: "NO_SHOW",
         at: appt.startsAt.toISOString(),
         detail: "Marked as no-show.",
@@ -221,6 +233,7 @@ export async function buildCustomerTimeline(input: {
   callLogs.forEach((call) => {
     if (!call.startedAt) return;
     events.push({
+      id: `call:${call.id}`,
       type: "CALL",
       at: call.startedAt.toISOString(),
       detail: call.outcome ? `Call outcome: ${call.outcome}` : "Call logged.",
@@ -256,6 +269,7 @@ export async function buildCustomerTimeline(input: {
     if ((email || normalizedPhone) && !matchesEmail(log.rawMeta) && !matchesPhone(log.rawMeta)) return;
     const label = log.action ? ` (${log.action.replace(/_/g, " ")})` : "";
     events.push({
+      id: `email:${log.id}`,
       type: log.direction === "outbound" ? "EMAIL_SENT" : log.direction === "draft" ? "EMAIL_DRAFT" : "EMAIL_INBOUND",
       at: (log.receivedAt || log.createdAt).toISOString(),
       detail: `${log.subject || "Email"}${label}`,
@@ -270,6 +284,7 @@ export async function buildCustomerTimeline(input: {
     });
     demoMatches.forEach((msg) => {
       events.push({
+        id: `demo:${msg.id}`,
         type: "MESSAGE",
         at: msg.receivedAt,
         detail: `${msg.channel.toUpperCase()}: ${msg.preview}`,
@@ -310,7 +325,7 @@ export async function buildOrgTimeline(input: {
         orgId: input.orgId,
         ...(from && to ? { startedAt: { gte: from, lte: to } } : {}),
       },
-      select: { startedAt: true, callerPhone: true, businessPhone: true, outcome: true },
+      select: { id: true, startedAt: true, callerPhone: true, businessPhone: true, outcome: true },
       orderBy: { startedAt: "desc" },
       take: limit,
     }),
@@ -320,6 +335,7 @@ export async function buildOrgTimeline(input: {
         ...(from && to ? { startsAt: { gte: from, lte: to } } : {}),
       },
       select: {
+        id: true,
         startsAt: true,
         status: true,
         service: { select: { name: true } },
@@ -335,7 +351,7 @@ export async function buildOrgTimeline(input: {
         orgId: input.orgId,
         ...(from && to ? { createdAt: { gte: from, lte: to } } : {}),
       },
-      select: { createdAt: true, receivedAt: true, subject: true, action: true, direction: true },
+      select: { id: true, createdAt: true, receivedAt: true, subject: true, action: true, direction: true },
       orderBy: { createdAt: "desc" },
       take: limit,
     }),
@@ -355,6 +371,7 @@ export async function buildOrgTimeline(input: {
 
   calls.forEach((call) => {
     events.push({
+      id: `call:${call.id}`,
       type: "CALL",
       at: call.startedAt.toISOString(),
       detail: `Call from ${formatCallerPhone(call.callerPhone, call.businessPhone)} (${call.outcome || "unknown"}).`,
@@ -363,6 +380,7 @@ export async function buildOrgTimeline(input: {
 
   appointments.forEach((appt) => {
     events.push({
+      id: `appointment:${appt.id}`,
       type: "BOOKING",
       at: appt.startsAt.toISOString(),
       detail: `${appt.customerName} · ${appt.service?.name ?? "Service"} with ${
@@ -374,6 +392,7 @@ export async function buildOrgTimeline(input: {
   emailLogs.forEach((log) => {
     const label = log.action ? ` (${log.action.replace(/_/g, " ")})` : "";
     events.push({
+      id: `email:${log.id}`,
       type: log.direction === "outbound" ? "EMAIL_SENT" : log.direction === "draft" ? "EMAIL_DRAFT" : "EMAIL_INBOUND",
       at: (log.receivedAt || log.createdAt).toISOString(),
       detail: `${log.subject || "Email"}${label}`,
@@ -384,6 +403,7 @@ export async function buildOrgTimeline(input: {
   const holds = resolveBookingHolds(data);
   holds.forEach((hold) => {
     events.push({
+      id: `hold:${hold.id}`,
       type: "HOLD",
       at: hold.createdAt,
       detail: `Hold created for ${new Date(hold.start).toLocaleString()}.`,
@@ -393,6 +413,7 @@ export async function buildOrgTimeline(input: {
   if (input.demoMode) {
     DEMO_MESSAGES.forEach((msg) => {
       events.push({
+        id: `demo:${msg.id}`,
         type: "MESSAGE",
         at: msg.receivedAt,
         detail: `${msg.channel.toUpperCase()}: ${msg.preview}`,

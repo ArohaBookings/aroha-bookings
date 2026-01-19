@@ -1,28 +1,113 @@
 // FILE MAP: app layout at app/layout.tsx; Retell webhook at app/api/webhooks/voice/[provider]/[orgId]/route.ts.
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { buildDeterministicCallSummary, resolveCallerPhone } from "@/lib/calls/summary";
 import { requireSessionOrgFeature } from "@/lib/entitlements";
 
 export const runtime = "nodejs";
 
-function startOfDayLocal(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
+const callItemSchema = z.object({
+  id: z.string(),
+  callId: z.string(),
+  retellCallId: z.string().nullable().optional(),
+  agentId: z.string(),
+  startedAt: z.string(),
+  endedAt: z.string().nullable(),
+  callerPhone: z.string(),
+  businessPhone: z.string().nullable().optional(),
+  direction: z.string().optional(),
+  outcome: z.string(),
+  appointmentId: z.string().nullable(),
+  appointment: z
+    .object({
+      startsAt: z.string(),
+      serviceName: z.string().nullable(),
+      staffName: z.string().nullable(),
+    })
+    .nullable(),
+  summary: z.string(),
+  category: z.string(),
+  priority: z.string(),
+  risk: z.string(),
+  reasons: z.array(z.string()),
+  steps: z.array(z.string()),
+  fields: z.record(z.string()),
+  hasTranscript: z.boolean(),
+  riskRadar: z
+    .object({
+      flagged: z.boolean(),
+      flags: z.array(z.string()),
+      cancellationCount: z.number(),
+    })
+    .optional(),
+});
+
+const listResponseSchema = z.object({
+  ok: z.literal(true),
+  items: z.array(callItemSchema),
+  nextCursor: z.string().nullable(),
+  lastWebhookAt: z.string().nullable().optional(),
+});
+
+function isAbortError(err: unknown) {
+  const msg = String((err as any)?.message || "").toLowerCase();
+  const code = (err as any)?.code as string | undefined;
+  return code === "ECONNRESET" || msg.includes("aborted") || msg.includes("aborterror");
 }
 
-function endOfDayLocal(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
+function getTimeZoneOffsetMs(timeZone: string, date: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const map = new Map(parts.map((p) => [p.type, p.value]));
+  const year = Number(map.get("year") || 0);
+  const month = Number(map.get("month") || 1);
+  const day = Number(map.get("day") || 1);
+  const hour = Number(map.get("hour") || 0);
+  const minute = Number(map.get("minute") || 0);
+  const second = Number(map.get("second") || 0);
+  const asUtc = Date.UTC(year, month - 1, day, hour, minute, second);
+  return asUtc - date.getTime();
 }
 
-function parseDateParam(raw?: string, end = false): Date | null {
+function parseDateParam(raw: string | null, timeZone: string, end = false): Date | null {
   if (!raw) return null;
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return null;
-  return end ? endOfDayLocal(d) : startOfDayLocal(d);
+  const [yy, mm, dd] = raw.split("-").map((n) => Number(n));
+  if (!yy || !mm || !dd) return null;
+  const hour = end ? 23 : 0;
+  const minute = end ? 59 : 0;
+  const second = end ? 59 : 0;
+  const ms = end ? 999 : 0;
+  const baseUtc = new Date(Date.UTC(yy, mm - 1, dd, hour, minute, second, ms));
+  try {
+    const offsetMs = getTimeZoneOffsetMs(timeZone, baseUtc);
+    return new Date(baseUtc.getTime() - offsetMs);
+  } catch {
+    return baseUtc;
+  }
+}
+
+function formatYmd(date: Date, timeZone: string) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(date);
+    const map = new Map(parts.map((p) => [p.type, p.value]));
+    return `${map.get("year")}-${map.get("month")}-${map.get("day")}`;
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
 }
 
 function asInt(value: string | null, fallback: number) {
@@ -31,6 +116,10 @@ function asInt(value: string | null, fallback: number) {
 }
 
 export async function GET(req: Request) {
+  if (req.signal.aborted) {
+    return NextResponse.json({ ok: false, error: "aborted" }, { status: 499 });
+  }
+  try {
   const auth = await requireSessionOrgFeature("callsInbox");
   if (!auth.ok) {
     return NextResponse.json({ ok: false, error: auth.error, entitlements: auth.entitlements }, { status: auth.status });
@@ -41,13 +130,24 @@ export async function GET(req: Request) {
   const cursor = url.searchParams.get("cursor") || "";
   const limit = asInt(url.searchParams.get("limit"), 60);
 
+  const org = await prisma.organization.findUnique({
+    where: { id: auth.orgId },
+    select: { timezone: true },
+  });
+  const tz = org?.timezone || "Pacific/Auckland";
+
+  const defaultFromRaw = formatYmd(new Date(Date.now() - 14 * 86400000), tz);
+  const defaultToRaw = formatYmd(new Date(), tz);
+
   const fromDate =
-    parseDateParam(url.searchParams.get("from") ?? undefined) ??
-    startOfDayLocal(new Date(Date.now() - 14 * 86400000));
+    parseDateParam(url.searchParams.get("from"), tz) ??
+    parseDateParam(defaultFromRaw, tz) ??
+    new Date(Date.now() - 14 * 86400000);
 
   const toDate =
-    parseDateParam(url.searchParams.get("to") ?? undefined, true) ??
-    endOfDayLocal(new Date());
+    parseDateParam(url.searchParams.get("to"), tz, true) ??
+    parseDateParam(defaultToRaw, tz, true) ??
+    new Date();
 
   const agentId = (url.searchParams.get("agent") || "").trim();
   const outcome = (url.searchParams.get("outcome") || "").trim().toUpperCase();
@@ -197,5 +297,18 @@ export async function GET(req: Request) {
 
   const nextCursor = rows.length > limit ? rows[limit]?.id ?? null : null;
 
-  return NextResponse.json({ ok: true, items: filteredItems, nextCursor, lastWebhookAt });
+  const payload = { ok: true, items: filteredItems, nextCursor, lastWebhookAt };
+  const parsed = listResponseSchema.safeParse(payload);
+  if (!parsed.success) {
+    console.error("[calls.list] invalid response shape", parsed.error.flatten());
+    return NextResponse.json({ ok: false, error: "Invalid response shape" }, { status: 500 });
+  }
+
+  return NextResponse.json(parsed.data);
+  } catch (err) {
+    if (req.signal.aborted || isAbortError(err)) {
+      return NextResponse.json({ ok: false, error: "aborted" }, { status: 499 });
+    }
+    throw err;
+  }
 }

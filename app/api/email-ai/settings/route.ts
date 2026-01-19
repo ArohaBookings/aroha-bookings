@@ -49,7 +49,7 @@ function safeRegex(pattern?: string | null) {
 async function getAuthedContext() {
   const gate = await requireSessionOrgFeature("emailAi");
   if (!gate.ok) {
-    return { error: gate.error || "Not authorized", status: gate.status as const };
+    return { error: gate.error || "Not authorized", status: gate.status };
   }
 
   const session = await getServerSession(authOptions);

@@ -20,7 +20,12 @@ export const revalidate = 0;
 export const metadata = {
   title: "Aroha Bookings",
   description: "AI receptionist + booking system",
-  viewport: "width=device-width, initial-scale=1, viewport-fit=cover",
+};
+
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default async function RootLayout({

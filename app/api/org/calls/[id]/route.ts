@@ -1,5 +1,6 @@
 // FILE MAP: app layout at app/layout.tsx; Retell webhook at app/api/webhooks/voice/[provider]/[orgId]/route.ts.
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { buildDeterministicCallSummary, resolveCallerPhone } from "@/lib/calls/summary";
 import { rewriteCallSummary } from "@/lib/ai/calls";
@@ -7,15 +8,66 @@ import { getGlobalControls, requireSessionOrgFeature } from "@/lib/entitlements"
 
 export const runtime = "nodejs";
 
+const detailResponseSchema = z.object({
+  ok: z.literal(true),
+  call: z.object({
+    id: z.string(),
+    callId: z.string(),
+    businessPhone: z.string().nullable().optional(),
+    direction: z.string().nullable().optional(),
+    agentId: z.string(),
+    startedAt: z.string(),
+    endedAt: z.string().nullable(),
+    callerPhone: z.string(),
+    outcome: z.string(),
+    appointmentId: z.string().nullable(),
+    appointment: z
+      .object({
+        id: z.string(),
+        startsAt: z.string(),
+        endsAt: z.string(),
+        customerName: z.string(),
+        customerId: z.string().nullable().optional(),
+        serviceName: z.string().nullable(),
+        staffName: z.string().nullable(),
+      })
+      .nullable(),
+    transcript: z.string().nullable(),
+    recordingUrl: z.string().nullable(),
+    rawJson: z.unknown(),
+    summary: z.object({
+      system: z.string(),
+      ai: z.string().nullable(),
+      aiEnabled: z.boolean(),
+    }),
+    category: z.string(),
+    priority: z.string(),
+    risk: z.string(),
+    reasons: z.array(z.string()),
+    steps: z.array(z.string()),
+    fields: z.record(z.string()),
+  }),
+});
+
 function readAiToggle(data: Record<string, unknown>) {
   const callsAnalytics = (data.callsAnalytics as Record<string, unknown>) || {};
   return Boolean(callsAnalytics.enableAiSummaries);
 }
 
+function isAbortError(err: unknown) {
+  const msg = String((err as any)?.message || "").toLowerCase();
+  const code = (err as any)?.code as string | undefined;
+  return code === "ECONNRESET" || msg.includes("aborted") || msg.includes("aborterror");
+}
+
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (req.signal.aborted) {
+    return NextResponse.json({ ok: false, error: "aborted" }, { status: 499 });
+  }
+  try {
   const auth = await requireSessionOrgFeature("callsInbox");
   if (!auth.ok) {
     return NextResponse.json({ ok: false, error: auth.error, entitlements: auth.entitlements }, { status: auth.status });
@@ -132,7 +184,7 @@ export async function GET(
     }
   }
 
-  return NextResponse.json({
+  const payload = {
     ok: true,
     call: {
       id: call.id,
@@ -171,5 +223,18 @@ export async function GET(
       steps: summary.steps,
       fields: summary.fields,
     },
-  });
+  };
+  const parsed = detailResponseSchema.safeParse(payload);
+  if (!parsed.success) {
+    console.error("[calls.detail] invalid response shape", parsed.error.flatten());
+    return NextResponse.json({ ok: false, error: "Invalid response shape" }, { status: 500 });
+  }
+
+  return NextResponse.json(parsed.data);
+  } catch (err) {
+    if (req.signal.aborted || isAbortError(err)) {
+      return NextResponse.json({ ok: false, error: "aborted" }, { status: 499 });
+    }
+    throw err;
+  }
 }

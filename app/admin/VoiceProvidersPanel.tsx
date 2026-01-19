@@ -3,6 +3,7 @@
 "use client";
 
 import React from "react";
+import { renderScalar } from "@/lib/ui/renderScalar";
 
 type OrgLite = { id: string; name: string };
 
@@ -25,7 +26,6 @@ function buildWebhookUrl(baseUrl: string) {
 
   return `${cleanBase}/api/webhooks/retell`;
 }
-
 
 export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
   const appUrl = (process.env.NEXT_PUBLIC_APP_URL || "").trim();
@@ -57,7 +57,7 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
       const res = await fetch(url, { cache: "no-store", signal: controller.signal });
       const json = (await res.json()) as { ok: boolean; connection?: Connection | null; error?: string };
       if (!res.ok || !json.ok) {
-        setStatus(json.error || "Unable to load connection.");
+        setStatus(renderScalar(json.error || "Unable to load connection."));
         setLoading(false);
         return;
       }
@@ -71,7 +71,7 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
         setActive(true);
       }
     } catch (e: any) {
-      if (e?.name !== "AbortError") setStatus("Unable to load connection.");
+      if (e?.name !== "AbortError") setStatus(renderScalar("Unable to load connection."));
     } finally {
       setLoading(false);
     }
@@ -103,12 +103,12 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
       });
       const json = (await res.json()) as { ok: boolean; error?: string; connection?: Connection };
       if (!res.ok || !json.ok) {
-        setStatus(json.error || "Unable to save connection.");
+        setStatus(renderScalar(json.error || "Unable to save connection."));
         return;
       }
-      setStatus("Connection saved.");
+      setStatus(renderScalar("Connection saved."));
     } catch (e: any) {
-      if (e?.name !== "AbortError") setStatus("Unable to save connection.");
+      if (e?.name !== "AbortError") setStatus(renderScalar("Unable to save connection."));
     } finally {
       setLoading(false);
     }
@@ -130,15 +130,15 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
       });
       const json = (await res.json()) as { ok: boolean; error?: string };
       if (!res.ok || !json.ok) {
-        setStatus(json.error || "Unable to clear connection.");
+        setStatus(renderScalar(json.error || "Unable to clear connection."));
         return;
       }
       setAgentId("");
       setWebhookSecret("");
       setActive(false);
-      setStatus("Connection cleared.");
+      setStatus(renderScalar("Connection cleared."));
     } catch (e: any) {
-      if (e?.name !== "AbortError") setStatus("Unable to clear connection.");
+      if (e?.name !== "AbortError") setStatus(renderScalar("Unable to clear connection."));
     } finally {
       setLoading(false);
     }
@@ -160,13 +160,13 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
       });
       const json = (await res.json()) as { ok: boolean; error?: string; connection?: Connection };
       if (!res.ok || !json.ok || !json.connection) {
-        setStatus(json.error || "Unable to rotate secret.");
+        setStatus(renderScalar(json.error || "Unable to rotate secret."));
         return;
       }
       setWebhookSecret(json.connection.webhookSecret);
-      setStatus("Webhook secret rotated.");
+      setStatus(renderScalar("Webhook secret rotated."));
     } catch (e: any) {
-      if (e?.name !== "AbortError") setStatus("Unable to rotate secret.");
+      if (e?.name !== "AbortError") setStatus(renderScalar("Unable to rotate secret."));
     } finally {
       setLoading(false);
     }
@@ -188,12 +188,12 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
       });
       const json = (await res.json()) as { ok: boolean; error?: string };
       if (!res.ok || !json.ok) {
-        setStatus(json.error || "Test webhook failed.");
+        setStatus(renderScalar(json.error || "Test webhook failed."));
         return;
       }
-      setStatus("Test webhook delivered.");
+      setStatus(renderScalar("Test webhook delivered."));
     } catch (e: any) {
-      if (e?.name !== "AbortError") setStatus("Test webhook failed.");
+      if (e?.name !== "AbortError") setStatus(renderScalar("Test webhook failed."));
     } finally {
       setLoading(false);
     }
@@ -203,9 +203,9 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
     if (!webhookUrl) return;
     try {
       await navigator.clipboard.writeText(webhookUrl);
-      setStatus("Webhook URL copied.");
+      setStatus(renderScalar("Webhook URL copied."));
     } catch {
-      setStatus("Unable to copy webhook URL.");
+      setStatus(renderScalar("Unable to copy webhook URL."));
     }
   }
 
@@ -218,11 +218,11 @@ export default function VoiceProvidersPanel({ orgs }: { orgs: OrgLite[] }) {
             Configure voice webhooks per organisation. Retell is supported now; Aroha Voice is coming.
           </p>
         </div>
-        {status ? (
-          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs text-zinc-600">
-            {status}
-          </div>
-        ) : null}
+      {status ? (
+        <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs text-zinc-600">
+          {renderScalar(status)}
+        </div>
+      ) : null}
       </div>
 
       {missingEnv ? (

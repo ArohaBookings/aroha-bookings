@@ -32,20 +32,36 @@ export async function GET(req: Request) {
   const orgId = (url.searchParams.get("orgId") || "").trim();
   if (!orgId) return json({ ok: false, error: "Missing orgId" }, 400);
 
-  const appt = await prisma.appointment.findFirst({
-    where: { orgId },
-    orderBy: { updatedAt: "desc" },
-    select: {
-      id: true,
-      status: true,
-      externalProvider: true,
-      externalCalendarEventId: true,
-      externalCalendarId: true,
-      syncedAt: true,
-    },
-  });
+  const [appt, settings, connection] = await Promise.all([
+    prisma.appointment.findFirst({
+      where: { orgId },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        id: true,
+        status: true,
+        externalProvider: true,
+        externalCalendarEventId: true,
+        externalCalendarId: true,
+        syncedAt: true,
+      },
+    }),
+    prisma.orgSettings.findUnique({ where: { orgId }, select: { data: true } }),
+    prisma.calendarConnection.findFirst({
+      where: { orgId, provider: "google" },
+      orderBy: { updatedAt: "desc" },
+      select: { accountEmail: true, expiresAt: true },
+    }),
+  ]);
 
   if (!appt) return json({ ok: false, error: "No appointments found" }, 404);
+
+  const data = (settings?.data as Record<string, unknown>) || {};
+  const calendarId = typeof data.googleCalendarId === "string" ? data.googleCalendarId : null;
+  const accountEmail =
+    (typeof data.googleAccountEmail === "string" && data.googleAccountEmail) || connection?.accountEmail || null;
+  const googleConnected = Boolean(calendarId && connection);
+  const expired = connection?.expiresAt ? connection.expiresAt.getTime() <= Date.now() : true;
+  const needsReconnect = !googleConnected || expired;
 
   let action = "skip";
   let reason = "No action required.";
@@ -68,5 +84,12 @@ export async function GET(req: Request) {
     externalCalendarId: appt.externalCalendarId,
     externalEventId: appt.externalCalendarEventId,
     syncedAt: appt.syncedAt?.toISOString() ?? null,
+    google: {
+      connected: googleConnected,
+      calendarId,
+      accountEmail,
+      expiresAt: connection?.expiresAt?.toISOString() ?? null,
+      needsReconnect,
+    },
   });
 }

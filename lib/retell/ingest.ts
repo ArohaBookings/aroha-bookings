@@ -257,6 +257,30 @@ export async function touchLastWebhook(orgId: string, at = new Date()) {
   const data = (settings?.data as Record<string, unknown>) || {};
   const calls = (data.calls as Record<string, unknown>) || {};
   calls.lastWebhookAt = at.toISOString();
+  calls.lastWebhookError = null;
+  data.calls = calls;
+
+  if (settings) {
+    await prisma.orgSettings.update({
+      where: { orgId },
+      data: { data: data as Prisma.InputJsonValue },
+    });
+  } else {
+    await prisma.orgSettings.create({
+      data: { orgId, data: data as Prisma.InputJsonValue },
+    });
+  }
+}
+
+export async function touchLastWebhookError(orgId: string, message: string, at = new Date()) {
+  const settings = await prisma.orgSettings.findUnique({
+    where: { orgId },
+    select: { data: true },
+  });
+  const data = (settings?.data as Record<string, unknown>) || {};
+  const calls = (data.calls as Record<string, unknown>) || {};
+  calls.lastWebhookError = message.slice(0, 300);
+  calls.lastWebhookErrorAt = at.toISOString();
   data.calls = calls;
 
   if (settings) {

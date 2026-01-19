@@ -82,6 +82,8 @@ type StatsRow = {
   bookings: number;
 };
 
+type MetricKey = "count" | "minutes" | "missed" | "answered" | "bookings" | "conversion";
+
 type StatsResponse = {
   totals: {
     count: number;
@@ -93,6 +95,13 @@ type StatsResponse = {
   weekly: StatsRow[];
   monthly: StatsRow[];
   timezone: string;
+  lastWebhookAt?: string | null;
+};
+
+type StatsApiResponse = {
+  ok: boolean;
+  data?: StatsResponse;
+  debug?: { from: string; to: string; rows: { total: number; filtered: number } } | null;
 };
 
 type Filters = {
@@ -109,18 +118,33 @@ type Filters = {
 
 type ToastState = { message: string; variant: "info" | "success" | "error" } | null;
 
+const skeletonKeys = ["s1", "s2", "s3", "s4", "s5", "s6"];
+
 function useToast() {
   const [toast, setToast] = React.useState<ToastState>(null);
   const timer = React.useRef<number | null>(null);
+  const mountedRef = React.useRef(true);
+
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (timer.current) window.clearTimeout(timer.current);
+    };
+  }, []);
 
   const show = React.useCallback(
     (
       message: string,
       variant: NonNullable<ToastState>["variant"] = "info"
     ) => {
+      if (!mountedRef.current) return;
       setToast({ message, variant });
       if (timer.current) window.clearTimeout(timer.current);
-      timer.current = window.setTimeout(() => setToast(null), 2400);
+      timer.current = window.setTimeout(() => {
+        if (!mountedRef.current) return;
+        setToast(null);
+      }, 2400);
     },
     []
   );
@@ -159,6 +183,17 @@ function formatDuration(startIso: string, endIso?: string | null) {
   return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 }
 
+function isAbortResponse(res: Response, data: unknown) {
+  if (res.status === 499) return true;
+  const error = (data as { error?: string } | null)?.error;
+  return typeof error === "string" && error.toLowerCase() === "aborted";
+}
+
+function buildSyncError(data: any, fallback: string) {
+  const message = typeof data?.error === "string" ? data.error : fallback;
+  return { message };
+}
+
 
 function outcomeBadge(outcome: string) {
   switch (outcome) {
@@ -180,6 +215,47 @@ function riskBadge(risk: string) {
   if (risk === "needs_review") return "bg-amber-500/15 text-amber-700 border-amber-400/30";
   return "bg-emerald-500/15 text-emerald-700 border-emerald-400/30";
 }
+
+const BarsChart = React.memo(function BarsChart({
+  rows,
+  metric,
+}: {
+  rows: StatsRow[];
+  metric: MetricKey;
+}) {
+  const valueForRow = React.useCallback(
+    (row: StatsRow) => {
+      if (metric === "conversion") {
+        return row.count ? Math.round((row.bookings / row.count) * 100) : 0;
+      }
+      return row[metric];
+    },
+    [metric]
+  );
+  const max = React.useMemo(() => Math.max(...rows.map((r) => valueForRow(r)), 1), [rows, valueForRow]);
+  return (
+    <div className="space-y-2">
+      {rows.map((row) => {
+        const value = valueForRow(row);
+        return (
+          <div key={row.label} className="grid grid-cols-[90px_1fr_50px] items-center gap-3 text-sm">
+            <span className="text-xs text-zinc-500">{row.label}</span>
+            <div className="h-2 rounded-full bg-zinc-100">
+              <div
+                className="h-2 rounded-full bg-emerald-500"
+                style={{
+                  width: `${Math.round((value / max) * 100)}%`,
+                  backgroundColor: "var(--brand-primary)",
+                }}
+              />
+            </div>
+            <span className="text-xs text-zinc-600">{value}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+});
 
 function buildQuery(filters: Filters, extra?: Record<string, string>) {
   const sp = new URLSearchParams();
@@ -221,7 +297,7 @@ export default function CallsAnalyticsClient({
   initialFilters: Filters;
   initialAiSummariesEnabled: boolean;
 }) {
-  const pollBaseMs = 15_000;
+  const pollBaseMs = 30_000;
   const router = useRouter();
   const searchParams = useSearchParams();
   const toast = useToast();
@@ -237,23 +313,33 @@ export default function CallsAnalyticsClient({
   const [lastWebhookAt, setLastWebhookAt] = React.useState<string | null>(null);
   const [syncing, setSyncing] = React.useState(false);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [selectedMissing, setSelectedMissing] = React.useState(false);
   const [detail, setDetail] = React.useState<CallDetail | null>(null);
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [showTranscript, setShowTranscript] = React.useState(false);
   const [rescueDraft, setRescueDraft] = React.useState<RescueDraft | null>(null);
   const [rescueLoading, setRescueLoading] = React.useState(false);
   const [stats, setStats] = React.useState<StatsResponse | null>(null);
+  const [statsDebug, setStatsDebug] = React.useState<StatsApiResponse["debug"] | null>(null);
   const [statsLoading, setStatsLoading] = React.useState(false);
-  const [metric, setMetric] = React.useState<"count" | "minutes" | "missed" | "answered" | "bookings" | "conversion">("count");
+  const [statsUpdatedAt, setStatsUpdatedAt] = React.useState<number | null>(null);
+  const [metric, setMetric] = React.useState<MetricKey>("count");
   const [aiSummariesEnabled, setAiSummariesEnabled] = React.useState(initialAiSummariesEnabled);
   const [savingAiSetting, setSavingAiSetting] = React.useState(false);
   const [showDetailMobile, setShowDetailMobile] = React.useState(false);
+  const [manualSyncing, setManualSyncing] = React.useState(false);
+  const [syncError, setSyncError] = React.useState<{ message: string } | null>(null);
   const detailAbortRef = React.useRef<AbortController | null>(null);
   const detailRequestRef = React.useRef(0);
+  const listRequestRef = React.useRef(0);
+  const statsRequestRef = React.useRef(0);
   const selectedIdRef = React.useRef<string | null>(null);
+  const interactionRef = React.useRef(0);
+  const syncBackoffRef = React.useRef(0);
+  const syncTimerRef = React.useRef<number | null>(null);
   const listAbortRef = React.useRef<AbortController | null>(null);
   const syncAbortRef = React.useRef<AbortController | null>(null);
-  const selectDebounceRef = React.useRef<number | null>(null);
+  const manualSyncAbortRef = React.useRef<AbortController | null>(null);
   const memoryAbortRef = React.useRef<AbortController | null>(null);
   const statsAbortRef = React.useRef<AbortController | null>(null);
   const aiSettingAbortRef = React.useRef<AbortController | null>(null);
@@ -265,6 +351,21 @@ export default function CallsAnalyticsClient({
     tonePreference?: string;
     notes?: string | null;
   } | null>(null);
+  const isMountedRef = React.useRef(true);
+
+  React.useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const safeSet = React.useCallback((fn: () => void) => {
+    if (!isMountedRef.current) return;
+    fn();
+  }, []);
+
+  const queryString = React.useMemo(() => buildQuery(filters), [filters]);
 
   const updateView = (next: "inbox" | "reports") => {
     setView(next);
@@ -275,47 +376,60 @@ export default function CallsAnalyticsClient({
 
   const loadCalls = React.useCallback(
     async ({ cursor, append, silent }: { cursor?: string; append?: boolean; silent?: boolean } = {}) => {
-      if (!silent) setLoading(true);
-      setSyncing(true);
-      setError(null);
+      listRequestRef.current += 1;
+      const requestId = listRequestRef.current;
+      if (!silent) safeSet(() => setLoading(true));
+      safeSet(() => setSyncing(true));
+      safeSet(() => setError(null));
       if (listAbortRef.current) listAbortRef.current.abort();
       const controller = new AbortController();
       listAbortRef.current = controller;
       try {
-        const qs = buildQuery(filters, cursor ? { cursor } : {});
+        const qs = cursor ? buildQuery(filters, { cursor }) : queryString;
         const res = await fetch(`/api/org/calls?${qs}`, { cache: "no-store", signal: controller.signal });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
+        if (isAbortResponse(res, data)) return;
+        if (!res.ok || (data && data.ok === false)) {
           throw new Error(data.error || "Failed to load calls");
         }
         const items = (data.items as CallItem[]) || [];
-        setCalls((prev) => {
-          if (append) return [...prev, ...items];
-          const prevMap = new Map(prev.map((call) => [call.id, call]));
-          return items.map((item) => ({ ...(prevMap.get(item.id) || {}), ...item }));
-        });
-        setNextCursor(data.nextCursor || null);
-        setLastWebhookAt(typeof data.lastWebhookAt === "string" ? data.lastWebhookAt : null);
-        setPollDelay(pollBaseMs);
-        setLastUpdatedAt(Date.now());
-        if (!append && selectedIdRef.current) {
-          const exists = items.some((item) => item.id === selectedIdRef.current);
-          if (!exists) {
-            setSelectedId(null);
-            setDetail(null);
+        if (!isMountedRef.current || listRequestRef.current !== requestId) return;
+        safeSet(() => {
+          setCalls((prev) => {
+            if (append) return [...prev, ...items];
+            const prevMap = new Map(prev.map((call) => [call.id, call]));
+            return items.map((item) => ({ ...(prevMap.get(item.id) || {}), ...item }));
+          });
+          setNextCursor(data.nextCursor || null);
+          setLastWebhookAt(typeof data.lastWebhookAt === "string" ? data.lastWebhookAt : null);
+          setPollDelay(pollBaseMs);
+          setLastUpdatedAt(Date.now());
+          if (!append && selectedIdRef.current) {
+            const exists = items.some((item) => item.id === selectedIdRef.current);
+            if (!exists) {
+              setSelectedMissing(true);
+            } else {
+              setSelectedMissing(false);
+            }
           }
-        }
+        });
       } catch (e: any) {
         if (e?.name !== "AbortError") {
-          setError(e?.message || "Failed to load calls");
-          setPollDelay((prev) => Math.min(prev * 2, 60000));
+          safeSet(() => {
+            setError(e?.message || "Failed to load calls");
+            setPollDelay((prev) => Math.min(prev * 2, 60000));
+          });
         }
       } finally {
-        setSyncing(false);
-        if (!silent) setLoading(false);
+        if (isMountedRef.current && listRequestRef.current === requestId) {
+          safeSet(() => {
+            setSyncing(false);
+            if (!silent) setLoading(false);
+          });
+        }
       }
     },
-    [filters]
+    [filters, pollBaseMs, queryString, safeSet]
   );
 
   const loadDetail = React.useCallback(async (id: string) => {
@@ -324,64 +438,85 @@ export default function CallsAnalyticsClient({
     if (detailAbortRef.current) detailAbortRef.current.abort();
     const controller = new AbortController();
     detailAbortRef.current = controller;
-    setDetailLoading(true);
+    safeSet(() => setDetailLoading(true));
     try {
       const res = await fetch(`/api/org/calls/${id}`, { cache: "no-store", signal: controller.signal });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
+      if (isAbortResponse(res, data)) return;
+      if (!res.ok || (data && data.ok === false)) {
         throw new Error(data.error || "Failed to load call detail");
       }
-      if (detailRequestRef.current !== requestId) return;
-      setDetail(data.call as CallDetail);
+      if (!isMountedRef.current || detailRequestRef.current !== requestId) return;
+      safeSet(() => setDetail(data.call as CallDetail));
     } catch (e: any) {
       if (e?.name === "AbortError") return;
       toast.show(e?.message || "Failed to load call detail", "error");
     } finally {
-      if (detailRequestRef.current === requestId) setDetailLoading(false);
+      if (isMountedRef.current && detailRequestRef.current === requestId) {
+        safeSet(() => setDetailLoading(false));
+      }
     }
-  }, [toast]);
+  }, [safeSet, toast]);
 
   const loadStats = React.useCallback(async () => {
-    setStatsLoading(true);
+    statsRequestRef.current += 1;
+    const requestId = statsRequestRef.current;
+    safeSet(() => setStatsLoading(true));
     if (statsAbortRef.current) statsAbortRef.current.abort();
     const controller = new AbortController();
     statsAbortRef.current = controller;
     try {
-      const qs = buildQuery(filters);
-      const res = await fetch(`/api/org/calls/stats?${qs}`, { cache: "no-store", signal: controller.signal });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to load stats");
+      const res = await fetch(`/api/org/calls/stats?${queryString}`, { cache: "no-store", signal: controller.signal });
+      const data = (await res.json().catch(() => ({}))) as StatsApiResponse;
+      if (isAbortResponse(res, data)) return;
+      if (!res.ok || (data && (data as any).ok === false)) {
+        throw new Error((data as any).error || "Failed to load stats");
       }
-      setStats(data as StatsResponse);
+      if (!isMountedRef.current || statsRequestRef.current !== requestId) return;
+      safeSet(() => {
+        setStats(data.data || null);
+        setStatsDebug(data.debug || null);
+        setStatsUpdatedAt(Date.now());
+      });
     } catch (e: any) {
       if (e?.name !== "AbortError") {
         toast.show(e?.message || "Failed to load stats", "error");
       }
     } finally {
-      setStatsLoading(false);
+      if (isMountedRef.current && statsRequestRef.current === requestId) {
+        safeSet(() => setStatsLoading(false));
+      }
     }
-  }, [filters, toast]);
+  }, [queryString, safeSet, toast]);
 
   React.useEffect(() => {
+    if (view !== "inbox") return;
     setCalls([]);
     setNextCursor(null);
-    setSelectedId(null);
     setShowDetailMobile(false);
     loadCalls();
-  }, [filters, loadCalls]);
+  }, [filters, loadCalls, view]);
 
   React.useEffect(() => {
     if (view !== "inbox") return;
     const timer = window.setInterval(() => {
+      if (detailLoading) return;
+      if (Date.now() - interactionRef.current < 2000) return;
       loadCalls({ silent: true });
     }, pollDelay);
     return () => window.clearInterval(timer);
-  }, [loadCalls, pollDelay, view]);
+  }, [detailLoading, loadCalls, pollDelay, view]);
 
   React.useEffect(() => {
     if (view !== "inbox") return;
-    async function syncCalls(force: boolean) {
+    const backoffSteps = [2000, 5000, 10000, 30000];
+
+    const schedule = (delay: number) => {
+      if (syncTimerRef.current) window.clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = window.setTimeout(() => run(false), delay);
+    };
+
+    async function run(force: boolean) {
       if (syncAbortRef.current) syncAbortRef.current.abort();
       const controller = new AbortController();
       syncAbortRef.current = controller;
@@ -389,25 +524,96 @@ export default function CallsAnalyticsClient({
         if (!force) {
           const lastTs = lastWebhookAt ? Date.parse(lastWebhookAt) : 0;
           const tooOld = !lastTs || Date.now() - lastTs > 10 * 60 * 1000;
-          if (!tooOld) return;
+          if (!tooOld) {
+            schedule(4 * 60 * 1000);
+            return;
+          }
         }
-        await fetch("/api/org/calls/sync", { method: "POST", signal: controller.signal });
-      } catch {
-        // ignore sync failures
+        const res = await fetch("/api/org/calls/sync", { method: "POST", signal: controller.signal });
+        const data = await res.json().catch(() => ({}));
+        if (isAbortResponse(res, data)) return;
+        if (!res.ok || (data && data.ok === false)) {
+          safeSet(() => setSyncError(buildSyncError(data, "Sync failed")));
+          const idx = Math.min(syncBackoffRef.current + 1, backoffSteps.length - 1);
+          syncBackoffRef.current = idx;
+          schedule(backoffSteps[idx]);
+          return;
+        }
+        safeSet(() => setSyncError(null));
+        syncBackoffRef.current = 0;
+        schedule(4 * 60 * 1000);
+      } catch (err: any) {
+        if (err?.name === "AbortError") return;
+        safeSet(() => setSyncError({ message: err?.message || "Sync failed" }));
+        const idx = Math.min(syncBackoffRef.current + 1, backoffSteps.length - 1);
+        syncBackoffRef.current = idx;
+        schedule(backoffSteps[idx]);
       }
     }
-    syncCalls(true);
-    const timer = window.setInterval(() => syncCalls(false), 4 * 60 * 1000);
+
+    run(true);
     return () => {
       if (syncAbortRef.current) syncAbortRef.current.abort();
-      clearInterval(timer);
+      if (syncTimerRef.current) window.clearTimeout(syncTimerRef.current);
     };
   }, [view, lastWebhookAt]);
+
+  const runManualSync = React.useCallback(async () => {
+    if (manualSyncAbortRef.current) manualSyncAbortRef.current.abort();
+    if (syncAbortRef.current) syncAbortRef.current.abort();
+    const controller = new AbortController();
+    manualSyncAbortRef.current = controller;
+    safeSet(() => setManualSyncing(true));
+    try {
+      const res = await fetch("/api/org/calls/sync", { method: "POST", signal: controller.signal });
+      const data = await res.json().catch(() => ({}));
+      if (isAbortResponse(res, data)) return;
+      if (!res.ok || (data && data.ok === false)) {
+        const errPayload = buildSyncError(data, "Sync failed");
+        safeSet(() => setSyncError(errPayload));
+        throw new Error(errPayload.message);
+      }
+      safeSet(() => setSyncError(null));
+      syncBackoffRef.current = 0;
+      await loadCalls({ silent: true });
+    } catch (e: any) {
+      if (e?.name === "AbortError") return;
+      toast.show(e?.message || "Sync failed", "error");
+    } finally {
+      safeSet(() => setManualSyncing(false));
+    }
+  }, [loadCalls, safeSet, toast]);
 
   React.useEffect(() => {
     if (view !== "reports") return;
     loadStats();
+    const timer = window.setInterval(() => {
+      loadStats();
+    }, 45_000);
+    return () => window.clearInterval(timer);
   }, [loadStats, view]);
+
+React.useEffect(() => {
+  if (view !== "inbox") return;
+
+  // derive locally so TS knows it's always defined
+  const isProcessing = (() => {
+    if (!lastWebhookAt) return true;
+    const lastTs = Date.parse(lastWebhookAt);
+    if (!Number.isFinite(lastTs)) return true;
+    return nowTick - lastTs > 10 * 60 * 1000;
+  })();
+
+  if (!isProcessing) return;
+
+  const timer = window.setTimeout(() => {
+    if (detailLoading) return;
+    if (Date.now() - interactionRef.current < 2000) return;
+    loadCalls({ silent: true });
+  }, 2000);
+
+  return () => window.clearTimeout(timer);
+}, [detailLoading, lastWebhookAt, nowTick, loadCalls, view]);
 
   React.useEffect(() => {
     if (!selectedId) {
@@ -417,11 +623,13 @@ export default function CallsAnalyticsClient({
       setDetailLoading(false);
       setRescueDraft(null);
       setRescueLoading(false);
+      setSelectedMissing(false);
       return;
     }
     setDetail(null);
     setRescueDraft(null);
     setRescueLoading(false);
+    setSelectedMissing(false);
     void loadDetail(selectedId);
   }, [selectedId, loadDetail]);
 
@@ -441,7 +649,7 @@ export default function CallsAnalyticsClient({
   React.useEffect(() => {
     const customerId = detail?.appointment?.customerId || null;
     if (!customerId) {
-      setClientMemory(null);
+      safeSet(() => setClientMemory(null));
       return;
     }
     if (memoryAbortRef.current) memoryAbortRef.current.abort();
@@ -451,19 +659,21 @@ export default function CallsAnalyticsClient({
       try {
         const res = await fetch(`/api/org/clients/${customerId}/profile`, { cache: "no-store", signal: controller.signal });
         const data = await res.json().catch(() => ({}));
+        if (isAbortResponse(res, data)) return;
         if (!res.ok || !data?.ok) {
-          setClientMemory(null);
+          safeSet(() => setClientMemory(null));
           return;
         }
-        setClientMemory(data.profile || null);
+        if (!isMountedRef.current) return;
+        safeSet(() => setClientMemory(data.profile || null));
       } catch (e: any) {
         if (e?.name === "AbortError") return;
-        setClientMemory(null);
+        safeSet(() => setClientMemory(null));
       }
     }
     loadMemory();
     return () => controller.abort();
-  }, [detail?.appointment?.customerId]);
+  }, [detail?.appointment?.customerId, safeSet]);
 
   function applyPreset(days: number) {
     const end = new Date();
@@ -476,7 +686,7 @@ export default function CallsAnalyticsClient({
     if (aiSettingAbortRef.current) aiSettingAbortRef.current.abort();
     const controller = new AbortController();
     aiSettingAbortRef.current = controller;
-    setSavingAiSetting(true);
+    safeSet(() => setSavingAiSetting(true));
     try {
       const res = await fetch("/api/org/calls/settings", {
         method: "POST",
@@ -485,13 +695,16 @@ export default function CallsAnalyticsClient({
         body: JSON.stringify({ enableAiSummaries: next }),
       });
       const data = await res.json().catch(() => ({}));
+      if (isAbortResponse(res, data)) return;
       if (!res.ok) throw new Error(data.error || "Failed to update setting");
-      setAiSummariesEnabled(next);
+      if (!isMountedRef.current) return;
+      safeSet(() => setAiSummariesEnabled(next));
       toast.show("AI summary setting updated.", "success");
     } catch (e: any) {
+      if (e?.name === "AbortError") return;
       toast.show(e?.message || "Failed to update setting", "error");
     } finally {
-      setSavingAiSetting(false);
+      safeSet(() => setSavingAiSetting(false));
     }
   }
 
@@ -509,7 +722,7 @@ export default function CallsAnalyticsClient({
     if (rescueAbortRef.current) rescueAbortRef.current.abort();
     const controller = new AbortController();
     rescueAbortRef.current = controller;
-    setRescueLoading(true);
+    safeSet(() => setRescueLoading(true));
     try {
       const res = await fetch("/api/org/calls/rescue", {
         method: "POST",
@@ -518,17 +731,24 @@ export default function CallsAnalyticsClient({
         body: JSON.stringify({ callId: detail.id, rewrite }),
       });
       const data = await res.json().catch(() => ({}));
+      if (isAbortResponse(res, data)) return;
       if (!res.ok || !data?.ok) throw new Error(data.error || "Failed to build rescue draft");
-      setRescueDraft(data.draft as RescueDraft);
+      if (!isMountedRef.current) return;
+      safeSet(() => setRescueDraft(data.draft as RescueDraft));
     } catch (e: any) {
       if (e?.name !== "AbortError") toast.show(e?.message || "Failed to build rescue draft", "error");
     } finally {
-      setRescueLoading(false);
+      safeSet(() => setRescueLoading(false));
     }
   }
 
   const detailPanel = detail ? (
     <div className="space-y-4">
+      {selectedMissing ? (
+        <Card className="border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
+          This call is no longer in the current filter range.
+        </Card>
+      ) : null}
       <div className="flex flex-wrap items-center gap-2">
         <Badge className={riskBadge(detail.risk)}>{detail.risk.replace("_", " ")}</Badge>
         <Badge variant="neutral">{detail.category.replace("_", " ")}</Badge>
@@ -545,16 +765,24 @@ export default function CallsAnalyticsClient({
             </p>
             <p className="text-xs text-zinc-500">{formatDateTime(detail.startedAt)} · {formatDuration(detail.startedAt, detail.endedAt)}</p>
           </div>
-          {detail.recordingUrl && (
-            <a
-              href={detail.recordingUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs font-medium text-emerald-700 underline"
+          <div className="flex flex-col items-end gap-2">
+            {detail.recordingUrl && (
+              <a
+                href={detail.recordingUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs font-medium text-emerald-700 underline"
+              >
+                Open recording
+              </a>
+            )}
+            <Button
+              variant="secondary"
+              onClick={() => copyToClipboard(JSON.stringify(detail.rawJson, null, 2), "Call JSON copied.")}
             >
-              Listen
-            </a>
-          )}
+              Copy call JSON
+            </Button>
+          </div>
         </div>
       </Card>
 
@@ -688,14 +916,51 @@ export default function CallsAnalyticsClient({
         </Card>
       )}
     </div>
+  ) : detailLoading ? (
+    <Card className="p-6 space-y-3">
+      <div className="h-4 w-32 rounded bg-zinc-100 animate-pulse" />
+      <div className="h-6 w-48 rounded bg-zinc-100 animate-pulse" />
+      <div className="h-24 rounded bg-zinc-100 animate-pulse" />
+    </Card>
   ) : (
     <Card className="p-6 text-sm text-zinc-600">
       Select a call to view details.
     </Card>
   );
 
-  const metrics = stats?.totals;
-  const metricLabels: Record<typeof metric, string> = {
+  const safeStats = React.useMemo<StatsResponse>(() => {
+    const totals = stats?.totals || { count: 0, minutes: 0, missed: 0, answered: 0, bookings: 0 };
+    return {
+      totals: {
+        count: Number.isFinite(totals.count) ? totals.count : 0,
+        minutes: Number.isFinite(totals.minutes) ? totals.minutes : 0,
+        missed: Number.isFinite(totals.missed) ? totals.missed : 0,
+        answered: Number.isFinite(totals.answered) ? totals.answered : 0,
+        bookings: Number.isFinite(totals.bookings) ? totals.bookings : 0,
+      },
+      weekly: Array.isArray(stats?.weekly) ? stats!.weekly.map((row) => ({
+        label: row.label,
+        count: Number.isFinite(row.count) ? row.count : 0,
+        minutes: Number.isFinite(row.minutes) ? row.minutes : 0,
+        missed: Number.isFinite(row.missed) ? row.missed : 0,
+        answered: Number.isFinite(row.answered) ? row.answered : 0,
+        bookings: Number.isFinite(row.bookings) ? row.bookings : 0,
+      })) : [],
+      monthly: Array.isArray(stats?.monthly) ? stats!.monthly.map((row) => ({
+        label: row.label,
+        count: Number.isFinite(row.count) ? row.count : 0,
+        minutes: Number.isFinite(row.minutes) ? row.minutes : 0,
+        missed: Number.isFinite(row.missed) ? row.missed : 0,
+        answered: Number.isFinite(row.answered) ? row.answered : 0,
+        bookings: Number.isFinite(row.bookings) ? row.bookings : 0,
+      })) : [],
+      timezone: stats?.timezone || timezone,
+      lastWebhookAt: stats?.lastWebhookAt ?? null,
+    };
+  }, [stats, timezone]);
+
+  const metrics = safeStats.totals;
+  const metricLabels: Record<MetricKey, string> = {
     count: "Calls",
     minutes: "Minutes",
     missed: "Missed",
@@ -704,45 +969,15 @@ export default function CallsAnalyticsClient({
     conversion: "Conversion %",
   };
 
-  function metricValue(row: StatsRow) {
-    if (metric === "conversion") {
-      return row.count ? Math.round((row.bookings / row.count) * 100) : 0;
-    }
-    return row[metric];
-  }
-
-  function metricMax(rows: StatsRow[]) {
-    return Math.max(...rows.map((r) => metricValue(r)), 1);
-  }
-
-  const renderBars = React.useCallback((rows: StatsRow[]) => {
-    const max = metricMax(rows);
-    return (
-      <div className="space-y-2">
-        {rows.map((row) => {
-          const value = metricValue(row);
-          return (
-            <div key={row.label} className="grid grid-cols-[90px_1fr_50px] items-center gap-3 text-sm">
-              <span className="text-xs text-zinc-500">{row.label}</span>
-              <div className="h-2 rounded-full bg-zinc-100">
-                <div
-                  className="h-2 rounded-full bg-emerald-500"
-                  style={{
-                    width: `${Math.round((value / max) * 100)}%`,
-                    backgroundColor: "var(--brand-primary)",
-                  }}
-                />
-              </div>
-              <span className="text-xs text-zinc-600">{value}</span>
-            </div>
-          );
-        })}
-      </div>
-    );
-  }, [metric]);
-
-  const weeklySeries = React.useMemo(() => stats?.weekly?.slice(-8) || [], [stats?.weekly]);
-  const monthlySeries = React.useMemo(() => stats?.monthly?.slice(-6) || [], [stats?.monthly]);
+  const weeklySeries = React.useMemo(() => safeStats.weekly.slice(-8), [safeStats.weekly]);
+  const monthlySeries = React.useMemo(() => safeStats.monthly.slice(-6), [safeStats.monthly]);
+  const lastWebhookEffective = lastWebhookAt || safeStats.lastWebhookAt || null;
+  const callsProcessing = React.useMemo(() => {
+    if (!lastWebhookEffective) return true;
+    const lastTs = Date.parse(lastWebhookEffective);
+    if (!Number.isFinite(lastTs)) return true;
+    return nowTick - lastTs > 10 * 60 * 1000;
+  }, [lastWebhookEffective, nowTick]);
 
   const inboxView = (
     <div className="space-y-6">
@@ -816,6 +1051,13 @@ export default function CallsAnalyticsClient({
             >
               {loading ? "Refreshing..." : "Refresh"}
             </Button>
+            <Button
+              variant="secondary"
+              onClick={runManualSync}
+              disabled={manualSyncing}
+            >
+              {manualSyncing ? "Syncing..." : "Force sync"}
+            </Button>
           </div>
         </div>
 
@@ -838,7 +1080,7 @@ export default function CallsAnalyticsClient({
           <Badge variant="neutral">{calls.length} calls</Badge>
           <div className="flex items-center gap-2 text-xs text-zinc-500">
             <span className={`inline-flex h-2 w-2 rounded-full ${syncing ? "bg-emerald-500" : "bg-zinc-300"}`} />
-            {syncing ? "Syncing..." : "Live"}
+            {callsProcessing ? "Processing calls..." : syncing ? "Syncing..." : "Live"}
             <span>·</span>
             <span>Auto-refresh ~{Math.round(pollDelay / 1000)}s</span>
             {lastUpdatedAt && (
@@ -858,27 +1100,20 @@ export default function CallsAnalyticsClient({
           <div className="max-h-[70vh] space-y-2 overflow-y-auto pr-1">
             {loading && calls.length === 0 ? (
               <div className="space-y-2">
-                {Array.from({ length: 6 }).map((_, i) => (
-                  <div key={i} className="h-16 rounded-lg bg-zinc-100 animate-pulse" />
+                {skeletonKeys.map((key) => (
+                  <div key={key} className="h-16 rounded-lg bg-zinc-100 animate-pulse" />
                 ))}
               </div>
             ) : calls.length === 0 ? (
-              <EmptyState title="No calls found" body="Try adjusting your filters." />
+              <EmptyState title="No calls yet" body="Make a test call or adjust your filters." />
             ) : (
               calls.map((call) => (
                 <button
                   key={call.id}
                   onClick={() => {
-                    if (selectDebounceRef.current) window.clearTimeout(selectDebounceRef.current);
-                    const apply = () => {
-                      setSelectedId(call.id);
-                      setShowDetailMobile(true);
-                    };
-                    if (syncing) {
-                      selectDebounceRef.current = window.setTimeout(apply, 200);
-                    } else {
-                      apply();
-                    }
+                    interactionRef.current = Date.now();
+                    setSelectedId(call.id);
+                    setShowDetailMobile(true);
                   }}
                   className={`w-full rounded-xl border px-3 py-3 text-left transition ${
                     selectedId === call.id ? "border-emerald-300 bg-emerald-50/70" : "border-zinc-200 hover:bg-zinc-50"
@@ -1024,6 +1259,27 @@ export default function CallsAnalyticsClient({
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-500">
+        {callsProcessing && <span>Processing calls…</span>}
+        {statsUpdatedAt && (
+          <span>Last updated {Math.max(1, Math.floor((nowTick - statsUpdatedAt) / 1000))}s ago</span>
+        )}
+        {safeStats.lastWebhookAt && (
+          <>
+            <span>·</span>
+            <span>Last webhook {formatDateTime(safeStats.lastWebhookAt)}</span>
+          </>
+        )}
+        {statsDebug && (
+          <>
+            <span>·</span>
+            <span>
+              Debug range {statsDebug.from.slice(0, 10)} → {statsDebug.to.slice(0, 10)} · rows {statsDebug.rows.filtered}/{statsDebug.rows.total}
+            </span>
+          </>
+        )}
+      </div>
+
       <div className="grid gap-4 lg:grid-cols-4">
         <Card className="p-4">
           <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Total calls</p>
@@ -1082,13 +1338,13 @@ export default function CallsAnalyticsClient({
             <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">
               Weekly {metricLabels[metric]}
             </p>
-            <span className="text-xs text-zinc-500">{timezone}</span>
+            <span className="text-xs text-zinc-500">{safeStats.timezone}</span>
           </div>
           <div className="mt-4">
             {statsLoading ? (
               <div className="h-40 rounded-lg bg-zinc-100 animate-pulse" />
-            ) : stats?.weekly?.length ? (
-              renderBars(weeklySeries)
+            ) : safeStats.weekly.length ? (
+              <BarsChart rows={weeklySeries} metric={metric} />
             ) : (
               <p className="text-sm text-zinc-500">No data available.</p>
             )}
@@ -1100,13 +1356,13 @@ export default function CallsAnalyticsClient({
             <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">
               Monthly {metricLabels[metric]}
             </p>
-            <span className="text-xs text-zinc-500">{timezone}</span>
+            <span className="text-xs text-zinc-500">{safeStats.timezone}</span>
           </div>
           <div className="mt-4">
             {statsLoading ? (
               <div className="h-40 rounded-lg bg-zinc-100 animate-pulse" />
-            ) : stats?.monthly?.length ? (
-              renderBars(monthlySeries)
+            ) : safeStats.monthly.length ? (
+              <BarsChart rows={monthlySeries} metric={metric} />
             ) : (
               <p className="text-sm text-zinc-500">No data available.</p>
             )}
@@ -1116,27 +1372,50 @@ export default function CallsAnalyticsClient({
     </div>
   );
 
-  return (
-    <div className="space-y-6">
-      {toast.node}
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Call analytics</p>
-          <h1 className="text-3xl font-semibold tracking-tight text-zinc-900">
-            Calls for {orgName}
-          </h1>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant={view === "inbox" ? "primary" : "secondary"} onClick={() => updateView("inbox")}>
-            Calls inbox
-          </Button>
-          <Button variant={view === "reports" ? "primary" : "secondary"} onClick={() => updateView("reports")}>
-            Charts & reports
-          </Button>
-        </div>
-      </header>
+return (
+  <div className="space-y-6">
+    {toast.node}
 
-      {view === "inbox" ? inboxView : reportsView}
-    </div>
-  );
+    <header className="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Call analytics</p>
+        <h1 className="text-3xl font-semibold tracking-tight text-zinc-900">
+          Calls for {orgName}
+        </h1>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <Button
+          variant={view === "inbox" ? "primary" : "secondary"}
+          onClick={() => updateView("inbox")}
+        >
+          Calls inbox
+        </Button>
+        <Button
+          variant={view === "reports" ? "primary" : "secondary"}
+          onClick={() => updateView("reports")}
+        >
+          Charts & reports
+        </Button>
+      </div>
+    </header>
+
+    <Card className="border border-amber-200/70 bg-gradient-to-r from-amber-50 via-white to-amber-50 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Badge variant="info">Analytics (Beta)</Badge>
+          <p className="text-sm text-zinc-600">
+            We are polishing call analytics - new data can take up to 60s to appear.
+          </p>
+        </div>
+      </div>
+
+      {syncError ? (
+        <div className="mt-2 text-xs text-amber-700">Sync temporarily unavailable. Try again shortly.</div>
+      ) : null}
+    </Card>
+
+    {view === "inbox" ? inboxView : reportsView}
+  </div>
+);
 }

@@ -1125,7 +1125,7 @@ function CreateForm({
 
 /* ───────────────────────── Edit Form ───────────────────────── */
 function EditForm({
-  data,
+  data: rawData,
   onClose,
   staff,
   services,
@@ -1145,6 +1145,22 @@ function EditForm({
   services: ServiceRow[];
   timezone?: string;
 }) {
+  const data = rawData as {
+    id: string;
+    startsAtISO: string;
+    durationMin: number;
+    staffId: string;
+    serviceId: string;
+    customerName: string;
+    customerPhone: string;
+    customerId?: string | null;
+    syncProvider?: string | null;
+    syncCalendarId?: string | null;
+    syncEventId?: string | null;
+    syncedAt?: string | Date | null;
+    syncErrorMessage?: string | null;
+    syncErrorAt?: string | Date | null;
+  };
   // Focus trap on container DIV (not the <form/>) to avoid ref type mismatch warnings
   const trapRef = useFocusTrap<HTMLDivElement>(onClose);
 
@@ -1458,7 +1474,11 @@ function EditForm({
             <div>
               Last synced:{" "}
               <span className="font-medium">
-                {data.syncedAt ? `${timeAgo(data.syncedAt)} (${new Date(data.syncedAt).toLocaleString()})` : "—"}
+                {data.syncedAt
+                  ? `${timeAgo(
+                      data.syncedAt instanceof Date ? data.syncedAt.toISOString() : data.syncedAt
+                    )} (${new Date(data.syncedAt).toLocaleString()})`
+                  : "—"}
               </span>
             </div>
             {data.syncErrorMessage ? (

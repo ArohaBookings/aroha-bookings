@@ -12,6 +12,7 @@ import { redirect } from "next/navigation";
 import CallsClient, { type CallRow } from "./CallsClient";
 import { resolveCallerPhone } from "@/lib/calls/summary";
 import { getOrgEntitlements } from "@/lib/entitlements";
+import { getParam, resolveSearchParams, type SearchParams as SharedSearchParams } from "@/lib/http/searchParams";
 
 type SearchParams = {
   from?: string;
@@ -56,9 +57,9 @@ function parseOutcome(raw?: string): CallOutcome | undefined {
 export default async function CallsPage({
   searchParams,
 }: {
-  searchParams: SearchParams;
+  searchParams: SearchParams | SharedSearchParams | Promise<SearchParams>;
 }): Promise<React.ReactElement> {
-  const params = searchParams;
+  const params = await resolveSearchParams(searchParams as SharedSearchParams);
 
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) redirect("/api/auth/signin");
@@ -95,11 +96,11 @@ export default async function CallsPage({
 
   const now = new Date();
   const defaultFrom = startOfDayLocal(new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000));
-  const fromDate = parseDateParam(params.from) ?? defaultFrom;
-  const toDate = parseDateParam(params.to, true) ?? endOfDayLocal(now);
-  const agentId = params.agent?.trim() || "";
-  const outcome = parseOutcome(params.outcome);
-  const search = params.q?.trim() || "";
+  const fromDate = parseDateParam(getParam(params, "from")) ?? defaultFrom;
+  const toDate = parseDateParam(getParam(params, "to"), true) ?? endOfDayLocal(now);
+  const agentId = getParam(params, "agent").trim();
+  const outcome = parseOutcome(getParam(params, "outcome"));
+  const search = getParam(params, "q").trim();
 
   const where: Prisma.CallLogWhereInput = {
     orgId: org.id,

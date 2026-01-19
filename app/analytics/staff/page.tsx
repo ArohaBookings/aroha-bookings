@@ -198,9 +198,10 @@ export default async function StaffAnalyticsPage() {
                 <div className="text-zinc-500">{b.label}</div>
                 {heatmap[i].map((v, idx) => {
                   const intensity = Math.max(0.1, v / max);
+                  const dayLabel = DAYS[idx] || String(idx);
                   return (
                     <div
-                      key={`${b.label}-${idx}`}
+                      key={`${b.label}-${dayLabel}`}
                       className="h-8 rounded-md border border-zinc-200"
                       style={{ backgroundColor: `rgba(16,185,129,${intensity})` }}
                       title={`${v} bookings`}
