@@ -5,11 +5,24 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { buildGoogleAuthUrl } from "@/lib/integrations/google/calendar";
 import { randomBytes } from "crypto";
-import { resolveOrigin } from "@/lib/http/origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
+
+function resolveOrigin(req: Request): string {
+  const forwardedProto = req.headers.get("x-forwarded-proto");
+  const forwardedHost = req.headers.get("x-forwarded-host");
+  if (forwardedProto && forwardedHost) {
+    return `${forwardedProto}://${forwardedHost}`.replace(/\/+$/, "");
+  }
+  const envNextAuth = (process.env.NEXTAUTH_URL || "").trim();
+  if (envNextAuth) return envNextAuth.replace(/\/+$/, "");
+  const envPublic = (process.env.NEXT_PUBLIC_APP_URL || "").trim();
+  if (envPublic) return envPublic.replace(/\/+$/, "");
+  if (process.env.NODE_ENV !== "production") return "http://localhost:3000";
+  return "";
+}
 
 function isSuperadmin(email?: string | null): boolean {
   if (!email) return false;
@@ -65,7 +78,7 @@ export async function GET(req: Request) {
 
   const redirectUrl = `${origin}/api/integrations/google/callback`;
   if (process.env.NODE_ENV !== "production") {
-    console.log("[google-oauth] origin:", origin, "redirect_uri:", redirectUrl);
+    console.log("[google-oauth] redirect_uri:", redirectUrl);
   }
 
   const authUrl = buildGoogleAuthUrl(state, redirectUrl);

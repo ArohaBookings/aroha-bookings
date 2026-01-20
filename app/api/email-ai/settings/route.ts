@@ -149,7 +149,9 @@ export async function GET() {
 
   return json({
     ok: true,
+    orgId: ctx.orgId,
     googleConnected: ctx.googleConnected,
+    gmailConnected: ctx.gmailConnected,
     settings: settings ?? null,
   });
 }

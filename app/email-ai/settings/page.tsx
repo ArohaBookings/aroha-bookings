@@ -916,7 +916,7 @@ Include signature if set. Do not invent facts.`;
             disabled={!gmailConnected || !orgId}
             onClick={async () => {
               if (!orgId) return;
-              const res = await fetch("/api/org/integrations/gmail/disconnect", {
+              const res = await fetch("/api/integrations/gmail/disconnect", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ orgId }),

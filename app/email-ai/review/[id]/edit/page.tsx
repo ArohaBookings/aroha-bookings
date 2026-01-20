@@ -148,7 +148,7 @@ export default async function Page({
   // Pre-fill subject/body from suggestion or fallbacks
   const initialSubject =
     (data.suggested?.subject ?? data.subject ?? "(no subject)").toString();
-  const initialBody = (data.suggested?.body ?? data.snippet ?? "").toString();
+  const initialBody = (data.suggested?.body ?? "").toString();
 
   // If a Gmail draft exists, show a direct link (we don’t redirect to avoid confusing users)
   const gmailDraftHref = data.draftId

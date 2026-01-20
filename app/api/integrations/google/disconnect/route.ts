@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { disconnectGoogleCalendar } from "@/lib/integrations/google/disconnect";
+import { writeGoogleCalendarIntegration } from "@/lib/orgSettings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,7 +44,36 @@ export async function POST(req: Request) {
     }
   }
 
-  await disconnectGoogleCalendar({ orgId, accountEmail: accountEmail || null });
+  await prisma.calendarConnection.deleteMany({
+    where: {
+      orgId,
+      provider: "google",
+      ...(accountEmail ? { accountEmail } : {}),
+    },
+  });
+
+  const os = await prisma.orgSettings.findUnique({
+    where: { orgId },
+    select: { data: true },
+  });
+
+  if (os) {
+    const data = { ...(os.data as Record<string, unknown>) };
+    delete (data as any).calendarSyncErrors;
+    const next = writeGoogleCalendarIntegration(data, {
+      connected: false,
+      calendarId: null,
+      accountEmail: null,
+      syncEnabled: false,
+      lastSyncAt: null,
+      lastSyncError: null,
+    });
+
+    await prisma.orgSettings.update({
+      where: { orgId },
+      data: { data: next as any },
+    });
+  }
 
 
   return NextResponse.json({ ok: true });

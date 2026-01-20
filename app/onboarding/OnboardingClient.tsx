@@ -16,15 +16,6 @@ type OrgInfo = {
   slug: string;
 };
 
-type TokenResp = {
-  ok: boolean;
-  connected: boolean;
-  email: string | null;
-  expires_at: number | null;
-  reason?: string | null;
-  error?: string;
-};
-
 type InboxSettings = {
   enableAutoDraft: boolean;
   enableAutoSend: boolean;
@@ -114,7 +105,7 @@ export default function OnboardingClient({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [tokenState, setTokenState] = useState<TokenResp | null>(null);
+  const [gmailConnected, setGmailConnected] = useState(false);
   const [bookingConfig, setBookingConfig] = useState<BookingPageConfig | null>(null);
   const [bookingDirty, setBookingDirty] = useState(false);
   const [bookingBusy, setBookingBusy] = useState(false);
@@ -134,10 +125,10 @@ export default function OnboardingClient({
     let alive = true;
     (async () => {
       try {
-        const res = await fetch("/api/email-ai/token", { cache: "no-store" });
+        const res = await fetch("/api/email-ai/settings", { cache: "no-store" });
         if (!res.ok) return;
-        const j = (await res.json()) as TokenResp;
-        if (alive) setTokenState(j);
+        const j = await res.json().catch(() => ({}));
+        if (alive) setGmailConnected(Boolean(j.gmailConnected));
       } catch {
         // ignore
       }
@@ -378,13 +369,13 @@ export default function OnboardingClient({
                     Live inbox sync and sending require a connected Google account.
                   </p>
                 </div>
-                <Badge variant={tokenState?.connected ? "success" : "warning"}>
-                  {tokenState?.connected ? "Connected" : "Not connected"}
+                <Badge variant={gmailConnected ? "success" : "warning"}>
+                  {gmailConnected ? "Connected" : "Not connected"}
                 </Badge>
               </div>
               <div className="mt-4 flex flex-wrap items-center gap-2">
                 <Button onClick={() => (window.location.href = "/settings/integrations/google")}>
-                  {tokenState?.connected ? "Manage connection" : "Connect Google"}
+                  {gmailConnected ? "Manage connection" : "Connect Google"}
                 </Button>
                 <Button variant="secondary" onClick={() => completeStep(1)}>
                   Mark step complete

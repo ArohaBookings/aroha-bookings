@@ -43,13 +43,14 @@ export async function GET() {
   const errors = Array.isArray(data.calendarSyncErrors) ? data.calendarSyncErrors : [];
   const lastError = errors.length ? errors[0] : null;
   const expiresAt = connection?.expiresAt ? connection.expiresAt.getTime() : null;
-  const needsReconnect = expiresAt ? expiresAt < Date.now() - 2 * 60 * 1000 : false;
+  const connected = Boolean(google.connected && calendarId);
+  const needsReconnect = connected ? !connection || (expiresAt ? expiresAt < Date.now() - 2 * 60 * 1000 : true) : false;
 
   return NextResponse.json({
     ok: true,
     orgId: membership.orgId,
-    connected: Boolean(connection) && google.connected,
-    email: connection?.accountEmail ?? null,
+    connected,
+    email: connection?.accountEmail ?? google.accountEmail ?? null,
     expiresAt,
     needsReconnect,
     calendarId,

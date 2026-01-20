@@ -36,8 +36,8 @@ import { unstable_noStore as noStore } from "next/cache";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
-import { getCalendarClient } from "@/lib/integrations/google/calendar";
-import { readGoogleCalendarIntegration, writeGoogleCalendarIntegration } from "@/lib/orgSettings";
+import { syncGoogleToArohaRange } from "@/lib/integrations/google/calendar";
+import { readGoogleCalendarIntegration } from "@/lib/orgSettings";
 import { getOrgEntitlements } from "@/lib/entitlements";
 
 import {
@@ -356,150 +356,6 @@ function mkOnlineBookingLink(base: string, d: Date, staffId?: string | null) {
 }
 
 /* ───────────────────────────────────────────────────────────────
-   Google Calendar inbound sync (Google → Aroha)
-   ─────────────────────────────────────────────────────────────── */
-
-/**
- * For a given org + calendar + time range, pull Google events into Aroha
- * appointments so they appear in the grid.
- *
- * - Only creates rows for events we haven’t seen before (by event.id).
- * - Marks them with source = "google-sync:<eventId>".
- * - Leaves staff/service unassigned; user can adjust in UI as needed.
- */
-async function syncGoogleToArohaRange(
-  orgId: string,
-  calendarId: string,
-  rangeStartUTC: Date,
-  rangeEndUTC: Date,
-): Promise<void> {
-  try {
-    const gcal = await getCalendarClient(orgId);
-    if (!gcal) {
-      // No usable Google tokens on this request – just skip quietly.
-      return;
-    }
-
-    const res = await gcal.events.list({
-      calendarId,
-      timeMin: rangeStartUTC.toISOString(),
-      timeMax: rangeEndUTC.toISOString(),
-      singleEvents: true,
-      orderBy: "startTime",
-    });
-
-    const items = res.data.items || [];
-    if (!items.length) return;
-
-    const existingBusy = await prisma.appointment.findMany({
-      where: { orgId, source: { startsWith: "google-busy:" } },
-      select: { id: true, source: true, startsAt: true, endsAt: true },
-    });
-    const busyByEventId = new Map<string, { id: string; startsAt: Date; endsAt: Date }>();
-    existingBusy.forEach((b) => {
-      const match = (b.source || "").match(/^google-busy:(.+)$/);
-      if (match?.[1]) busyByEventId.set(match[1], { id: b.id, startsAt: b.startsAt, endsAt: b.endsAt });
-    });
-
-    for (const ev of items) {
-      if (ev.status === "cancelled") continue;
-      const eventId = ev.id;
-      if (!eventId) continue;
-
-      const startIso = ev.start?.dateTime || ev.start?.date;
-      const endIso = ev.end?.dateTime || ev.end?.date;
-      if (!startIso || !endIso) continue;
-
-      const startsAt = new Date(startIso);
-      const endsAt = new Date(endIso);
-      if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) continue;
-
-      const isAllDay = !ev.start?.dateTime && !!ev.start?.date;
-      if (isAllDay) {
-        startsAt.setHours(9, 0, 0, 0);
-        endsAt.setHours(17, 0, 0, 0);
-      }
-
-      const sourceFlag = (ev.extendedProperties?.private as Record<string, string> | undefined)?.source;
-      const bookingId = (ev.extendedProperties?.private as Record<string, string> | undefined)?.bookingId;
-
-      if (sourceFlag === "arohabookings" && bookingId) {
-        const appt = await prisma.appointment.findUnique({
-          where: { id: bookingId },
-          select: { id: true, startsAt: true, endsAt: true, externalCalendarEventId: true },
-        });
-        if (appt) {
-          const needsTimeUpdate =
-            appt.startsAt.getTime() !== startsAt.getTime() || appt.endsAt.getTime() !== endsAt.getTime();
-          await prisma.appointment.update({
-            where: { id: appt.id },
-            data: {
-              ...(needsTimeUpdate ? { startsAt, endsAt } : {}),
-              externalProvider: "google",
-              externalCalendarEventId: eventId,
-              externalCalendarId: calendarId,
-              syncedAt: new Date(),
-            },
-          });
-        }
-        continue;
-      }
-
-      const existing = busyByEventId.get(eventId);
-      if (existing) {
-        if (existing.startsAt.getTime() !== startsAt.getTime() || existing.endsAt.getTime() !== endsAt.getTime()) {
-          await prisma.appointment.update({
-            where: { id: existing.id },
-            data: {
-              startsAt,
-              endsAt,
-              customerName: ev.summary || "Google busy",
-              customerPhone: "",
-              source: `google-busy:${eventId}`,
-            },
-          });
-        }
-        continue;
-      }
-
-      await prisma.appointment.create({
-        data: {
-          orgId,
-          startsAt,
-          endsAt,
-          customerName: ev.summary || "Google busy",
-          customerPhone: "",
-          status: "SCHEDULED",
-          source: `google-busy:${eventId}`,
-        },
-      });
-    }
-
-    const os = await prisma.orgSettings.findUnique({ where: { orgId }, select: { data: true } });
-    const next = writeGoogleCalendarIntegration(
-      (os?.data as Record<string, unknown>) || {},
-      { lastSyncAt: new Date().toISOString(), lastSyncError: null }
-    );
-    await prisma.orgSettings.upsert({
-      where: { orgId },
-      create: { orgId, data: next as any },
-      update: { data: next as any },
-    });
-  } catch (err) {
-    console.error("Error in Google → Aroha calendar sync:", err);
-    try {
-      const existing = await prisma.orgSettings.findUnique({ where: { orgId }, select: { data: true } });
-      const data = (existing?.data as Record<string, unknown>) || {};
-      const next = writeGoogleCalendarIntegration(data, {
-        lastSyncError: err instanceof Error ? err.message : "Google sync failed",
-        lastSyncAt: new Date().toISOString(),
-      });
-      await prisma.orgSettings.update({ where: { orgId }, data: { data: next as any } });
-    } catch {}
-  }
-}
-
-/* ───────────────────────────────────────────────────────────────
    Page (server component)
    ─────────────────────────────────────────────────────────────── */
 
@@ -551,9 +407,12 @@ export default async function CalendarPage({
       googleConnectedFlag = google.connected && google.syncEnabled;
       calendarSyncErrors = Array.isArray(data.calendarSyncErrors) ? data.calendarSyncErrors : [];
       calendarLastSyncAt = google.lastSyncAt;
-      needsReconnect = connection?.expiresAt
-        ? connection.expiresAt.getTime() < Date.now() - 2 * 60 * 1000
-        : false;
+      if (googleConnectedFlag) {
+        const expiresAt = connection?.expiresAt?.getTime() || 0;
+        needsReconnect = !connection || expiresAt < Date.now() - 2 * 60 * 1000;
+      } else {
+        needsReconnect = false;
+      }
     } catch {
       // swallow; render as "not connected"
       googleCalendarId = null;

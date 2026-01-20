@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { getToken } from "next-auth/jwt";
-import { disconnectGmail } from "@/lib/integrations/gmail/disconnect";
+import { writeGmailIntegration } from "@/lib/orgSettings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,7 +61,22 @@ export async function POST(req: Request) {
   if (refreshToken) await revokeGoogleToken(refreshToken);
   else if (accessToken) await revokeGoogleToken(accessToken);
 
-  await disconnectGmail(orgId);
+  const os = await prisma.orgSettings.findUnique({
+    where: { orgId },
+    select: { data: true },
+  });
+  const data = (os?.data as Record<string, unknown>) || {};
+  const next = writeGmailIntegration(data, {
+    connected: false,
+    accountEmail: null,
+    lastError: null,
+  });
+
+  await prisma.orgSettings.upsert({
+    where: { orgId },
+    create: { orgId, data: next as any },
+    update: { data: next as any },
+  });
 
   return NextResponse.json({ ok: true });
 }

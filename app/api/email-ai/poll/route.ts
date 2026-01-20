@@ -8,7 +8,7 @@ import { auth } from "@/lib/auth";
 import { getToken } from "next-auth/jwt";
 import { google, gmail_v1 } from "googleapis";
 import { readGmailIntegration } from "@/lib/orgSettings";
-import { generateEmailReply, hasOpenAI } from "@/lib/ai/openai";
+import { generateEmailReply, hasAI } from "@/lib/ai/client";
 
 /* ──────────────────────────────────────────────
    Runtime / cache
@@ -56,7 +56,7 @@ function safeStr(v: unknown, fallback = ""): string {
 }
 
 function asBool(v: string | null) {
-  return v === "1" || v === "true";
+  return v === "1" || v === "true" || v === "yes";
 }
 
 function parseGmailDate(internalDate?: string | null, dateHeader?: string) {
@@ -64,6 +64,27 @@ function parseGmailDate(internalDate?: string | null, dateHeader?: string) {
   if (a > 0 && Number.isFinite(a)) return a;
   const b = dateHeader ? Date.parse(dateHeader) : NaN;
   return Number.isFinite(b) ? b : Date.now();
+}
+
+function resolveOrigin(req: Request): string {
+  // Prefer Vercel/edge forwarded headers (correct on Vercel). Fall back to env.
+  const proto = req.headers.get("x-forwarded-proto");
+  const host = req.headers.get("x-forwarded-host") || req.headers.get("host");
+  if (proto && host) return `${proto}://${host}`;
+
+  const envOrigin =
+    process.env.NEXTAUTH_URL ||
+    process.env.NEXT_PUBLIC_APP_URL ||
+    "https://aroha-bookings.vercel.app";
+
+  try {
+    const u = new URL(req.url);
+    if (u.origin && u.origin !== "null") return u.origin;
+  } catch {
+    // ignore
+  }
+
+  return envOrigin;
 }
 
 async function withTimeout<T>(p: Promise<T>, ms: number, label = "operation"): Promise<T> {
@@ -82,7 +103,12 @@ async function getGmailClient(session: any, req: Request): Promise<gmail_v1.Gmai
   let accessToken: string | undefined = (session as any)?.google?.access_token;
 
   if (!accessToken) {
-    const jwt = await getToken({ req: req as any, raw: false, secureCookie: false });
+    const jwt = await getToken({
+      req: req as any,
+      raw: false,
+      // In prod, cookies are secure; in local dev they are not.
+      secureCookie: process.env.NODE_ENV === "production",
+    });
     const g = (jwt as any) || {};
     const refreshToken = g.google_refresh_token as string | undefined;
     const cachedAccess = g.google_access_token as string | undefined;
@@ -401,7 +427,7 @@ export async function POST(req: Request) {
     const emailSnippetsArr = Array.isArray((orgSettingsData as any).emailSnippets) ? ((orgSettingsData as any).emailSnippets as any[]) : [];
     const snippets = normalizeSnippets([...emailSnippetsArr, ...kbSnippets]);
 
-    const aiEnabled = hasOpenAI();
+    const aiEnabled = hasAI();
 
     // 3) Gmail client (no TS2451 redeclare: name is gmailClient)
     const gmailClient = await getGmailClient(session, req);
@@ -646,7 +672,7 @@ export async function POST(req: Request) {
             aiError = err?.message || "AI reply generation failed";
           }
         } else if (!aiEnabled) {
-          aiError = "AI disabled: missing OPENAI_API_KEY";
+          aiError = "AI unavailable";
         }
 
         const hasForbidden =
@@ -674,7 +700,7 @@ export async function POST(req: Request) {
             reason: blocked
               ? "blocked"
               : aiError
-                ? aiError === "AI disabled: missing OPENAI_API_KEY"
+                ? /missing\s+openai_api_key|openai_api_key|ai unavailable/i.test(aiError)
                   ? "ai_disabled_missing_key"
                   : "ai_error"
                 : autoSendAllowed
@@ -710,13 +736,28 @@ export async function POST(req: Request) {
         });
 
         if (autoSendAllowed && suggestedBody) {
-          // fire-and-forget send (best-effort)
-          const origin = new URL(req.url).origin;
+          // Best-effort auto-send.
+          // IMPORTANT: forward cookies so /api/email-ai/send can authenticate on Vercel.
+          const origin = resolveOrigin(req);
+          const cookie = req.headers.get("cookie") || "";
+
           await fetch(`${origin}/api/email-ai/send`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ logId: log.id, subject: suggestedSubject, body: suggestedBody }),
-          }).catch(() => {});
+            headers: {
+              "Content-Type": "application/json",
+              ...(cookie ? { cookie } : {}),
+            },
+            body: JSON.stringify({
+              logId: log.id,
+              subject: suggestedSubject,
+              body: suggestedBody,
+            }),
+          }).catch((e) => {
+            // do not throw; just record an error for diagnostics
+            // (send route will also write failures)
+            console.error("[email-ai/poll] auto-send fetch failed", e);
+          });
+
           sentCounter += 1;
           totalSentCounter += 1;
         }

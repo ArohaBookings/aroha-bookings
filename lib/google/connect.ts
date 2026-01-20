@@ -10,9 +10,7 @@ type GoogleAuthOptions = {
 
 function resolveRedirectUrl(override?: string) {
   if (override && override.trim()) return override.trim();
-  const envRedirect = (process.env.GOOGLE_REDIRECT_URL || "").trim();
-  if (envRedirect) return envRedirect;
-  const envOrigin = (process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || "").trim();
+  const envOrigin = (process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "").trim();
   if (envOrigin) return `${envOrigin.replace(/\/+$/, "")}/api/integrations/google/callback`;
   throw new Error("Google OAuth redirect URL missing (set NEXT_PUBLIC_APP_URL or NEXTAUTH_URL)");
 }

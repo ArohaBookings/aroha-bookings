@@ -9,18 +9,31 @@ type TokenProbe = {
   expires_at?: number | null;   // ms epoch
   had_google_provider?: boolean;
   error?: string;
+  gmailConnected?: boolean;
 };
 
 const NEAR_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
 
 async function fetchProbe(): Promise<TokenProbe> {
-  const r = await fetch("/api/email-ai/token", { cache: "no-store" });
-  if (r.status === 401) {
+  const [settingsRes, tokenRes] = await Promise.all([
+    fetch("/api/email-ai/settings", { cache: "no-store" }),
+    fetch("/api/email-ai/token", { cache: "no-store" }),
+  ]);
+
+  if (settingsRes.status === 401 || tokenRes.status === 401) {
     // session lost → force login
     window.location.href = "/login?callbackUrl=%2Femail-ai";
     return { ok: false, connected: false };
   }
-  return r.json();
+  const settingsJson = await settingsRes.json().catch(() => ({}));
+  const tokenJson = await tokenRes.json().catch(() => ({}));
+  const gmailConnected = Boolean(settingsJson?.gmailConnected);
+  return {
+    ...tokenJson,
+    ok: Boolean(tokenJson?.ok) && Boolean(settingsJson?.ok),
+    connected: gmailConnected,
+    gmailConnected,
+  };
 }
 
 export default function ConnectGmail() {

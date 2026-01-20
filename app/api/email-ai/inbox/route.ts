@@ -17,6 +17,7 @@ type InboxSettings = {
   businessHoursOnly: boolean;
   dailySendCap: number;
   requireApprovalForFirstN: number;
+  automationPaused: boolean;
 };
 
 type SyncState = {
@@ -38,6 +39,7 @@ function resolveInboxSettings(data: Record<string, unknown>): InboxSettings {
     businessHoursOnly: raw.businessHoursOnly ?? true,
     dailySendCap: typeof raw.dailySendCap === "number" ? raw.dailySendCap : 40,
     requireApprovalForFirstN: typeof raw.requireApprovalForFirstN === "number" ? raw.requireApprovalForFirstN : 20,
+    automationPaused: raw.automationPaused ?? false,
   };
 }
 

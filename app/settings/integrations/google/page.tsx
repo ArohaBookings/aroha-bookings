@@ -39,7 +39,7 @@ export default async function GoogleIntegrationsPage() {
   const google = readGoogleCalendarIntegration(data);
   const calendarId = google.calendarId || null;
   const accountEmail = google.accountEmail || connection?.accountEmail || null;
-  const isConnected = Boolean(google.connected && calendarId && connection);
+  const isConnected = Boolean(google.connected && calendarId);
   const errorsRaw = Array.isArray(data.calendarSyncErrors) ? data.calendarSyncErrors : [];
 
   const errors = errorsRaw

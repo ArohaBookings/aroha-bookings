@@ -160,6 +160,7 @@ export async function GET(
     const lastDraftPreview = gmailConnected ? cloneSmall(rawMeta?.lastDraftPreview) || undefined : undefined;
     const draftId = gmailConnected ? s(rawMeta?.draftId, "") || undefined : undefined;
     const ai = cloneSmall(rawMeta?.ai) || undefined;
+    const aiError = gmailConnected ? s(rawMeta?.aiError, "") || null : null;
 
     // Provide a Gmail draft edit link if we have a draftId
     const editUrl = draftId
@@ -193,6 +194,7 @@ export async function GET(
         replyTo: gmailConnected ? s(rawMeta?.replyTo, "") || undefined : undefined,
       },
       ai,
+      aiError,
       gmailConnected,
     };
 

@@ -6,6 +6,8 @@ import {
   sendReminderEmail,
   sendReminderSMS,
 } from "@/lib/notifications";
+import { readGoogleCalendarIntegration } from "@/lib/orgSettings";
+import { syncGoogleToArohaRange } from "@/lib/integrations/google/calendar";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -247,6 +249,14 @@ export async function GET(req: Request) {
           await Promise.allSettled(tasks);
         }
       }
+    }
+
+    const google = readGoogleCalendarIntegration(data);
+    if (google.connected && google.syncEnabled && google.calendarId) {
+      const now = new Date();
+      const rangeStart = new Date(now.getTime() - 30 * 24 * 60 * 60_000);
+      const rangeEnd = new Date(now.getTime() + 90 * 24 * 60 * 60_000);
+      await syncGoogleToArohaRange(org.id, google.calendarId, rangeStart, rangeEnd);
     }
 
     const next = {

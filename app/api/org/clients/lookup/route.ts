@@ -35,7 +35,7 @@ export async function GET(req: Request) {
   });
 
   if (!customer) {
-    return json({ ok: false, error: "Not found" }, 404);
+    return json({ ok: false, error: "Not found" }, 200);
   }
 
   return json({ ok: true, customer });

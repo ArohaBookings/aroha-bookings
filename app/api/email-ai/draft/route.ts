@@ -132,9 +132,10 @@ export async function POST(req: Request) {
 
     const suggestedBody =
       firstString(bodyJson.body) ||
-      firstString(rawMeta?.suggested?.body) ||
-      firstString(log.snippet) ||
-      "Thanks for your email.";
+      firstString(rawMeta?.suggested?.body);
+    if (!suggestedBody) {
+      return json({ ok: false, error: "No suggested reply available" }, 400);
+    }
 
     const safeInReplyTo = firstString((log as any).gmailMsgId);
     const safeReferences = firstString((log as any).gmailMsgId);

@@ -992,7 +992,7 @@ React.useEffect(() => {
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm">
           <div className="font-semibold">Analytics (Beta) — Sync temporarily unavailable. Data may be delayed.</div>
           <div className="mt-1 text-xs text-amber-800">
-            Feature coming soon / may be incomplete while we polish.
+            Feature may be unavailable while syncing. Feature coming soon / may be incomplete while we polish.
           </div>
         </div>
       )}

@@ -61,6 +61,7 @@ type OrgIdentity = {
   branding: BrandingConfig;
   demoMode: boolean;
   entitlements?: { features?: { emailAi?: boolean } };
+  isSuperAdmin?: boolean;
 };
 
 type LogDetail = {
@@ -75,6 +76,7 @@ type LogDetail = {
   thread?: Array<{ id: string; date: string; from: string; body: string }>;
   meta?: { from?: string; replyTo?: string };
   ai?: { reasons?: string[]; usedSnippets?: string[] };
+  aiError?: string | null;
 };
 
 const FILTERS = [
@@ -254,6 +256,7 @@ export default function InboxClient() {
   const searchRef = useRef<HTMLInputElement | null>(null);
   const draftSubjectRef = useRef<HTMLInputElement | null>(null);
   const draftBodyRef = useRef<HTMLTextAreaElement | null>(null);
+  const autoSuggestRef = useRef<Map<string, number>>(new Map());
 
   const commandRef = useRef<HTMLInputElement | null>(null);
 
@@ -324,7 +327,7 @@ export default function InboxClient() {
   );
 
   const runSync = useCallback(async () => {
-    if (!authed || !tokenState?.connected) return;
+    if (!authed || !gmailConnected) return;
     setSyncing(true);
     setSyncError(null);
     try {
@@ -345,7 +348,7 @@ export default function InboxClient() {
     } finally {
       setSyncing(false);
     }
-  }, [authed, loadInbox, loadToken, query, tokenState?.connected]);
+  }, [authed, gmailConnected, loadInbox, loadToken, query]);
 
   useEffect(() => {
     if (!authed) return;
@@ -362,7 +365,7 @@ export default function InboxClient() {
   }, [identity?.demoMode, items.length, loading]);
 
   useEffect(() => {
-    if (!authed || !tokenState?.connected) return;
+    if (!authed || !gmailConnected) return;
     if (pollRef.current) clearTimeout(pollRef.current);
 
     const loop = async () => {
@@ -374,7 +377,7 @@ export default function InboxClient() {
     return () => {
       if (pollRef.current) clearTimeout(pollRef.current);
     };
-  }, [authed, runSync, tokenState?.connected]);
+  }, [authed, gmailConnected, runSync]);
 
   useEffect(() => {
     if (!activeId) return;
@@ -397,6 +400,47 @@ export default function InboxClient() {
       ignore = true;
     };
   }, [activeId]);
+
+  useEffect(() => {
+    if (!detail || !gmailConnected) return;
+    if (identity?.demoMode) return;
+    if (detail.suggested?.body) return;
+    const last = autoSuggestRef.current.get(detail.id) || 0;
+    if (Date.now() - last < 30_000) return;
+    autoSuggestRef.current.set(detail.id, Date.now());
+
+    (async () => {
+      try {
+        const res = await fetch("/api/email-ai/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ op: "queue_suggested", id: detail.id }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || !j?.suggested) {
+          setDetail((prev) =>
+            prev && prev.id === detail.id
+              ? { ...prev, aiError: j?.error || "AI unavailable" }
+              : prev
+          );
+          return;
+        }
+        setDetail((prev) =>
+          prev && prev.id === detail.id ? { ...prev, suggested: j.suggested, aiError: null } : prev
+        );
+        if (draftBodyRef.current) {
+          draftBodyRef.current.value = j.suggested?.body || "";
+        }
+        if (draftSubjectRef.current && j.suggested?.subject) {
+          draftSubjectRef.current.value = j.suggested.subject;
+        }
+      } catch (e: any) {
+        setDetail((prev) =>
+          prev && prev.id === detail.id ? { ...prev, aiError: e?.message || "AI unavailable" } : prev
+        );
+      }
+    })();
+  }, [detail, gmailConnected, identity?.demoMode]);
 
   useEffect(() => {
     if (!detail?.meta?.from) {
@@ -553,6 +597,46 @@ export default function InboxClient() {
     await loadInbox(query);
   };
 
+  const rewriteSuggested = async () => {
+    if (!detail) return;
+    const subject = draftSubjectRef.current?.value || "";
+    const body = draftBodyRef.current?.value || "";
+    try {
+      let nextSubject = subject;
+      let nextBody = body;
+      if (!nextBody) {
+        const seedRes = await fetch("/api/email-ai/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ op: "queue_suggested", id: detail.id }),
+        });
+        const seedJson = await seedRes.json().catch(() => ({}));
+        if (!seedRes.ok || !seedJson?.suggested?.body) {
+          throw new Error(seedJson?.error || "AI unavailable");
+        }
+        nextSubject = seedJson.suggested.subject || nextSubject;
+        nextBody = seedJson.suggested.body || nextBody;
+      }
+      const res = await fetch("/api/email-ai/rewrite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ logId: detail.id, subject: nextSubject, body: nextBody }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j?.ok) {
+        throw new Error(j?.error || "Rewrite failed");
+      }
+      if (draftBodyRef.current) {
+        draftBodyRef.current.value = j.suggested?.body || "";
+      }
+      if (draftSubjectRef.current && j.suggested?.subject) {
+        draftSubjectRef.current.value = j.suggested.subject;
+      }
+    } catch (e: any) {
+      setSyncError(e?.message || "Rewrite failed");
+    }
+  };
+
   const bulkAction = async (op: "approve" | "skip") => {
     const ids = Array.from(selected);
     if (!ids.length) return;
@@ -572,13 +656,13 @@ export default function InboxClient() {
     await loadInbox(query);
   };
 
-  const statusLabel = tokenState?.connected
+  const statusLabel = gmailConnected
     ? syncing
       ? "Syncing"
       : syncError || syncState.lastError
       ? "Error"
       : "Connected"
-    : "Paused";
+    : "Disconnected";
 
   const statusTone: "neutral" | "success" | "warning" | "info" =
     statusLabel === "Connected"
@@ -766,7 +850,7 @@ export default function InboxClient() {
         <div className="flex items-center gap-3">
           <Badge variant={statusTone}>{statusLabel}</Badge>
           <div className="text-xs text-zinc-500">Last sync: {lastSyncLabel}</div>
-          {!tokenState?.connected && (
+          {!gmailConnected && (
             <Button variant="primary" onClick={() => signIn("google", { callbackUrl: "/email-ai" })}>
               Connect Google
             </Button>
@@ -774,9 +858,9 @@ export default function InboxClient() {
         </div>
       </div>
 
-      {tokenState?.connected && (
+      {gmailConnected && (
         <Card className="flex flex-wrap items-center gap-3 text-xs text-zinc-600">
-          <div>Google: {tokenState.email || "Connected"}</div>
+          <div>Google: {tokenState?.email || "Connected"}</div>
           <div>Sync interval: {Math.round(backoffRef.current / 1000)}s</div>
           <div>Auto-send threshold {settings?.autoSendMinConfidence ?? 92}%</div>
           {syncError && <span className="text-rose-600">{syncError}</span>}
@@ -785,7 +869,7 @@ export default function InboxClient() {
           )}
         </Card>
       )}
-      {!tokenState?.connected && (
+      {!gmailConnected && (
         <Card className="text-sm text-zinc-600">
           Google is disconnected. Connect to enable live sync and Gmail actions.
         </Card>
@@ -1134,9 +1218,17 @@ export default function InboxClient() {
                     <textarea
                       id="draft-body"
                       ref={draftBodyRef}
-                      defaultValue={detail.suggested?.body || detail.snippet}
+                      defaultValue={detail.suggested?.body || ""}
                       className="w-full min-h-[200px] rounded-xl border border-zinc-200 p-3 text-sm text-zinc-700"
                     />
+                    {!detail.suggested?.body && detail.aiError ? (
+                      <div className="text-[11px] text-amber-700">
+                        AI unavailable. Please review and reply manually.
+                        {process.env.NODE_ENV !== "production" && identity?.isSuperAdmin ? (
+                          <div className="mt-1 text-[11px] text-amber-800">{detail.aiError}</div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
@@ -1213,6 +1305,9 @@ export default function InboxClient() {
                 }}
               >
                 Send now
+              </Button>
+              <Button variant="secondary" onClick={rewriteSuggested}>
+                Rewrite with AI
               </Button>
               <Button
                 variant="secondary"

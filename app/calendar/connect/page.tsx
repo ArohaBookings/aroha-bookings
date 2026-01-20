@@ -35,6 +35,14 @@ export default function CalendarConnectPage() {
 
   useEffect(() => {
     let cancelled = false;
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("status");
+    const reason = params.get("reason");
+    if (status === "connected") {
+      setNotice("Google Calendar connected.");
+    } else if (status === "error") {
+      setErr(reason || "Google OAuth failed.");
+    }
     (async () => {
       try {
         setLoading(true);
@@ -141,7 +149,7 @@ export default function CalendarConnectPage() {
               setBusy(true);
               setNotice(null);
               try {
-                const res = await fetch("/api/org/integrations/google-calendar/disconnect", {
+                const res = await fetch("/api/integrations/google/disconnect", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ orgId: probe.orgId, accountEmail: probe.email ?? null }),

@@ -19,7 +19,7 @@ export default function GoogleConnectionActions({
     setBusy(true);
     setStatus(null);
     try {
-      const res = await fetch("/api/org/integrations/google-calendar/disconnect", {
+      const res = await fetch("/api/integrations/google/disconnect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ orgId, accountEmail }),

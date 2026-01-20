@@ -2,10 +2,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import { getToken } from "next-auth/jwt";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { google, gmail_v1 } from "googleapis";
-import { getToken } from "next-auth/jwt";
 import { getOrgEntitlements } from "@/lib/entitlements";
 import { resolveEmailIdentity } from "@/lib/emailIdentity";
 import { createHash } from "crypto";
@@ -77,6 +77,28 @@ async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function firstString(v: unknown): string | null {
+  return typeof v === "string" ? v : null;
+}
+
+async function safeJson<T = any>(req: Request): Promise<T | null> {
+  try {
+    return (await req.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+function requireEnv(name: string) {
+  const v = (process.env[name] || "").trim();
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
+}
+
+function looksLikeAuthError(msg: string) {
+  return /Invalid Credentials|invalid_grant|unauthorized|401|403|No Gmail refresh token/i.test(msg);
+}
+
 /* ──────────────────────────────────────────────
    GMAIL ACCESS TOKEN (session → JWT refresh)
 ────────────────────────────────────────────── */
@@ -94,8 +116,8 @@ async function ensureGoogleAccessToken(req: Request, session: any): Promise<stri
   if (!rt) throw new Error("No Gmail refresh token in JWT");
 
   const body = new URLSearchParams({
-    client_id: process.env.GOOGLE_CLIENT_ID!,
-    client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+    client_id: requireEnv("GOOGLE_CLIENT_ID"),
+    client_secret: requireEnv("GOOGLE_CLIENT_SECRET"),
     refresh_token: rt,
     grant_type: "refresh_token",
   });
@@ -123,15 +145,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const { logId, overrideBody, dryRun, subject: uiSubject, body: uiBody } = (await req.json()) as {
-      logId: string;
-      overrideBody?: string;
-      dryRun?: boolean;
-      subject?: string;
-      body?: string;
-    };
+    const bodyJson = await safeJson<any>(req);
+    if (!bodyJson) {
+      return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
+    }
 
-    if (!logId) return NextResponse.json({ ok: false, error: "Missing logId" }, { status: 400 });
+    const logId = firstString(bodyJson.logId);
+    const overrideBody = firstString(bodyJson.overrideBody) ?? undefined;
+    const dryRun = Boolean(bodyJson.dryRun);
+    const uiSubject = firstString(bodyJson.subject) ?? undefined;
+    const uiBody = firstString(bodyJson.body) ?? undefined;
+
+    if (!logId) {
+      return NextResponse.json({ ok: false, error: "Missing logId" }, { status: 400 });
+    }
 
     const log = await prisma.emailAILog.findUnique({ where: { id: logId } });
     if (!log) return NextResponse.json({ ok: false, error: "Log not found" }, { status: 404 });
@@ -166,14 +193,21 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Email AI disabled for this org" }, { status: 403 });
     }
 
-    const accessToken = await ensureGoogleAccessToken(req, session).catch((e) => {
-      console.error("ensureGoogleAccessToken error:", e);
-      return null;
-    });
+    let accessToken: string | null = null;
+    try {
+      accessToken = await ensureGoogleAccessToken(req, session);
+    } catch (e: any) {
+      const msg = e?.message || "Failed to obtain Gmail access token";
+      console.error("ensureGoogleAccessToken error:", msg);
+      return NextResponse.json(
+        { ok: false, error: msg, type: looksLikeAuthError(msg) ? "auth" : "upstream" },
+        { status: looksLikeAuthError(msg) ? 401 : 502 }
+      );
+    }
 
     if (!accessToken) {
       return NextResponse.json(
-        { ok: false, error: "No Gmail access token (and refresh failed)" },
+        { ok: false, error: "Failed to obtain Gmail access token", type: "auth" },
         { status: 401 }
       );
     }
@@ -193,24 +227,30 @@ export async function POST(req: Request) {
     let subject = log.subject ? normalizeSubject(log.subject) : "Re: (no subject)";
 
     if (log.gmailThreadId) {
-      const thread = await gmailClient.users.threads.get({
-        userId: "me",
-        id: log.gmailThreadId,
-        format: "metadata",
-      });
+      try {
+        const thread = await gmailClient.users.threads.get({
+          userId: "me",
+          id: log.gmailThreadId,
+          format: "metadata",
+        });
 
-      const last = thread.data.messages?.slice(-1)[0];
-      const headers = (last?.payload?.headers || []) as any[];
+        const last = thread.data.messages?.slice(-1)[0];
+        const headers = (last?.payload?.headers || []) as any[];
 
-      const originalFrom = header(headers, "From");
-      const originalSubject = header(headers, "Subject");
-      const originalMsgId = header(headers, "Message-ID");
-      const prevRefs = header(headers, "References");
+        const originalFrom = header(headers, "From");
+        const originalSubject = header(headers, "Subject");
+        const originalMsgId = header(headers, "Message-ID");
+        const prevRefs = header(headers, "References");
 
-      toHeader = originalFrom || toHeader;
-      subject = normalizeSubject(originalSubject || subject);
-      inReplyTo = originalMsgId;
-      references = [prevRefs, originalMsgId].filter(Boolean).join(" ").trim();
+        toHeader = originalFrom || toHeader;
+        subject = normalizeSubject(originalSubject || subject);
+        inReplyTo = originalMsgId;
+        references = [prevRefs, originalMsgId].filter(Boolean).join(" ").trim();
+      } catch (e: any) {
+        // Thread context improves headers but is not required to send a reply.
+        const msg = e?.message || "Thread fetch failed";
+        console.warn("gmail threads.get failed:", msg);
+      }
     }
 
     if (!toHeader) {
@@ -224,7 +264,11 @@ export async function POST(req: Request) {
     /* ──────────────────────────────────────────────
        COMPOSE SUBJECT & BODY
     ─────────────────────────────────────────────── */
-    const suggested = ((log.rawMeta as any)?.suggested ?? {}) as { subject?: string; body?: string };
+    const suggestedRaw = (log.rawMeta as any)?.suggested ?? {};
+    const suggested = {
+      subject: typeof suggestedRaw?.subject === "string" ? suggestedRaw.subject : undefined,
+      body: typeof suggestedRaw?.body === "string" ? suggestedRaw.body : undefined,
+    } as { subject?: string; body?: string };
 
     if (uiSubject && uiSubject.trim()) subject = uiSubject.trim();
     else if (suggested.subject && suggested.subject.trim()) subject = suggested.subject.trim();
@@ -255,7 +299,13 @@ export async function POST(req: Request) {
 
     if (settings.signature) {
       const sig = settings.signature.trim();
-      if (sig && !body.trim().endsWith(sig)) body = `${body}\n\n${sig}`;
+      if (sig) {
+        const normBody = body.replace(/\s+$/g, "");
+        const normSig = sig.replace(/^\s+|\s+$/g, "");
+        if (!normBody.endsWith(normSig)) {
+          body = `${normBody}\n\n${normSig}`;
+        }
+      }
     }
 
     const identity = await resolveEmailIdentity(log.orgId, "");
@@ -366,14 +416,22 @@ export async function POST(req: Request) {
   } catch (err: unknown) {
     console.error("SEND ROUTE ERROR:", err);
     const message = err instanceof Error ? err.message : "Send failed";
+
+    // Map common upstream failures to useful status codes
+    const status = looksLikeAuthError(message)
+      ? 401
+      : /rate limit|429|too many requests/i.test(message)
+      ? 429
+      : 502;
+
     return NextResponse.json(
       {
         ok: false,
         delivered: false,
         error: message,
-        type: message.includes("Invalid Credentials") || message.includes("401") ? "auth" : "server",
+        type: status === 401 ? "auth" : "upstream",
       },
-      { status: 500 }
+      { status }
     );
   }
 }

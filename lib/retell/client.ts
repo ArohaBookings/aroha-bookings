@@ -19,7 +19,16 @@ type RetellListResult =
     };
 
 const DEFAULT_BASE = "https://api.retellai.com";
-const DEFAULT_PATHS = ["/v1/calls", "/v2/calls", "/v1/calls/list", "/v1/list-calls"];
+const ALT_BASES = ["https://api.retell.ai"];
+const DEFAULT_PATHS = [
+  "/v1/calls",
+  "/v2/calls",
+  "/v1/calls/list",
+  "/v2/calls/list",
+  "/v1/call/list",
+  "/v2/call/list",
+  "/v1/list-calls",
+];
 
 let cachedCallsPath: string | null = null;
 
@@ -38,17 +47,22 @@ export function buildUrl(base: string, path: string, params?: Record<string, str
 export async function retellFetchJson<T>(
   url: string,
   apiKey: string,
-  signal?: AbortSignal,
-  timeoutMs = 12_000
+  options?: { method?: "GET" | "POST"; body?: unknown; signal?: AbortSignal; timeoutMs?: number }
 ): Promise<RetellFetchResult<T>> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? 12_000);
   const abortHandler = () => controller.abort();
-  signal?.addEventListener("abort", abortHandler);
+  options?.signal?.addEventListener("abort", abortHandler);
 
   try {
+    const method = options?.method ?? "GET";
     const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${apiKey}` },
+      method,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        ...(method === "POST" ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(method === "POST" ? { body: JSON.stringify(options?.body || {}) } : {}),
       signal: controller.signal,
     });
     const text = await res.text().catch(() => "");
@@ -68,7 +82,7 @@ export async function retellFetchJson<T>(
     return { ok: false, status: aborted ? 499 : null, textSnippet: String(err?.message || "") };
   } finally {
     clearTimeout(timeout);
-    signal?.removeEventListener("abort", abortHandler);
+    options?.signal?.removeEventListener("abort", abortHandler);
   }
 }
 
@@ -78,7 +92,10 @@ export async function retellListCalls(input: {
   limit?: number;
   signal?: AbortSignal;
 }): Promise<RetellListResult> {
-  const baseUrl = normalizeBase(process.env.RETELL_BASE_URL || DEFAULT_BASE);
+  const baseEnv = normalizeBase(process.env.RETELL_BASE_URL || DEFAULT_BASE);
+  const bases = [baseEnv, ...ALT_BASES.map((b) => normalizeBase(b))].filter(
+    (v, i, self) => self.indexOf(v) === i
+  );
   const rawOverride = (process.env.RETELL_CALLS_LIST_PATH || "").trim();
   const overridePath = rawOverride ? (rawOverride.startsWith("/") ? rawOverride : `/${rawOverride}`) : "";
   const limit = input.limit ?? 50;
@@ -91,17 +108,27 @@ export async function retellListCalls(input: {
 
   const tried: Array<{ url: string; status: number | null }> = [];
 
-  for (const path of candidatePaths) {
-    const url = buildUrl(baseUrl, path, { agent_id: input.agentId, limit });
-    const result = await retellFetchJson<{ calls?: unknown[] }>(url, input.apiKey, input.signal);
-    tried.push({ url, status: result.status ?? null });
-    console.log("[calls.sync] RETELL_TRY", { url, status: result.status ?? null });
+  for (const baseUrl of bases) {
+    for (const path of candidatePaths) {
+      const url = buildUrl(baseUrl, path, { agent_id: input.agentId, limit });
+      const isListPath = /list/i.test(path);
+      const method = isListPath ? "POST" : "GET";
+      const body = isListPath ? { agent_id: input.agentId, limit } : undefined;
+      const result = await retellFetchJson<{ calls?: unknown[] }>(url, input.apiKey, {
+        method,
+        body,
+        signal: input.signal,
+        timeoutMs: 12_000,
+      });
+      tried.push({ url, status: result.status ?? null });
+      console.log("[calls.sync] RETELL_TRY", { url, method, status: result.status ?? null });
 
-    if (result.ok) {
-      const json = result.json as any;
-      const calls = Array.isArray(json?.calls) ? json.calls : Array.isArray(json) ? json : [];
-      cachedCallsPath = path;
-      return { ok: true, status: result.status, calls, chosenUrl: url, tried };
+      if (result.ok) {
+        const json = result.json as any;
+        const calls = Array.isArray(json?.calls) ? json.calls : Array.isArray(json) ? json : [];
+        cachedCallsPath = path;
+        return { ok: true, status: result.status, calls, chosenUrl: url, tried };
+      }
     }
   }
 

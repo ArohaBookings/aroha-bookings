@@ -82,6 +82,7 @@ export default async function ReviewQueuePage({
     : [null, null];
   const confidenceThreshold = settings?.minConfidenceToSend ?? 0.65;
   const gmailConnected = readGmailIntegration((orgSettings?.data as Record<string, unknown>) || {}).connected;
+  const showDebug = process.env.NODE_ENV !== "production";
 
   // --- read filters from query
   const params = await searchParams;
@@ -373,6 +374,7 @@ if (!gmailConnected) {
             const suggested =
               ((i.rawMeta as any)?.suggested as { subject?: string; body?: string }) ||
               null;
+            const aiError = ((i.rawMeta as any)?.aiError as string | undefined) || null;
 
             // confidence badge
             const confPct =
@@ -483,13 +485,21 @@ if (!gmailConnected) {
                       {suggested.subject ? (
                         <div className="mt-1 text-sm">
                           <span className="font-medium">Subject: </span>
-                          {suggested.subject}
+                          <span className="js-suggested-subject">{suggested.subject}</span>
                         </div>
                       ) : null}
                       {suggested.body ? (
-                        <pre className="mt-2 text-sm whitespace-pre-wrap">
+                        <pre className="mt-2 text-sm whitespace-pre-wrap js-suggested-body">
                           {suggested.body}
                         </pre>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {!suggested && aiError ? (
+                    <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                      AI unavailable. Please review manually.
+                      {showDebug && isSuperAdmin ? (
+                        <div className="mt-1 text-[11px] text-amber-800">{aiError}</div>
                       ) : null}
                     </div>
                   ) : null}
@@ -516,6 +526,16 @@ if (!gmailConnected) {
                   >
                     Send suggested reply
                   </Button>
+                  {suggested ? (
+                    <Button
+                      variant="secondary"
+                      className="js-rewrite"
+                      data-id={i.id}
+                      title="Rewrite suggested reply"
+                    >
+                      Rewrite
+                    </Button>
+                  ) : null}
 
                   {/* Use an internal page so cookies (NextAuth) always apply */}
                   <Link

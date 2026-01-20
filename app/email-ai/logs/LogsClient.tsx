@@ -280,7 +280,7 @@ li.addEventListener("click", (ev) => {
         // thread + draft UI
         const when = new Date(j.createdAt ?? new Date().toISOString()).toLocaleString?.() ?? "";
         const suggestedSubject = j.suggested?.subject ?? (j.subject ? `Re: ${j.subject}` : "");
-        const suggestedBody = (j.suggested?.body ?? j.snippet ?? "").toString();
+        const suggestedBody = (j.suggested?.body ?? "").toString();
 
         const confidencePct =
           typeof j.confidence === "number" ? Math.round(j.confidence * 100) : null;
@@ -326,14 +326,31 @@ li.addEventListener("click", (ev) => {
         $("#btn-suggest")?.addEventListener("click", () => suggestFor(id, false));
         $("#btn-rewrite")?.addEventListener("click", async () => {
           try {
-            const body = (document.getElementById("draft-body") as HTMLTextAreaElement)?.value || "";
+            let body = (document.getElementById("draft-body") as HTMLTextAreaElement)?.value || "";
+            let subject = (document.getElementById("draft-subj") as HTMLInputElement)?.value || "";
+            if (!body) {
+              const seed = await fetch("/api/email-ai/action", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ op: "queue_suggested", id }),
+              });
+              const seedJson = await seed.json().catch(() => ({}));
+              if (!seed.ok || !seedJson?.suggested?.body) {
+                throw new Error(seedJson?.error || "AI unavailable");
+              }
+              body = seedJson.suggested.body || body;
+              subject = seedJson.suggested.subject || subject;
+              (document.getElementById("draft-body") as HTMLTextAreaElement).value = body;
+              (document.getElementById("draft-subj") as HTMLInputElement).value = subject;
+            }
+
             const res = await fetch("/api/email-ai/rewrite", {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ logId: id, body })
+              body: JSON.stringify({ logId: id, subject, body })
             });
             if (!res.ok) throw 0;
             const j2 = await res.json();
-            (document.getElementById("draft-body") as HTMLTextAreaElement).value = j2.body || body;
+            (document.getElementById("draft-body") as HTMLTextAreaElement).value = j2?.suggested?.body || body;
             toast("Rewritten");
           } catch {
             toast("Rewrite failed", false);

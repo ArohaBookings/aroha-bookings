@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { requireSessionOrgFeature } from "@/lib/entitlements";
 import type { Prisma } from "@prisma/client";
+import { retellListCalls } from "@/lib/retell/client";
+import { parseRetellPayload, upsertRetellCall } from "@/lib/retell/ingest";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,16 +65,72 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: auth.error }, { status: auth.status });
     }
 
+    const connection = await prisma.retellConnection.findFirst({
+      where: { orgId: auth.orgId, active: true },
+      orderBy: { updatedAt: "desc" },
+      select: { agentId: true, apiKeyEncrypted: true },
+    });
+
+    if (!connection?.agentId) {
+      await updateSyncMeta(auth.orgId, {
+        lastSyncAt: new Date().toISOString(),
+        lastSyncError: "Retell not configured",
+        lastSyncTraceId: null,
+        lastSyncHttpStatus: 400,
+        lastSyncEndpointTried: null,
+      });
+      return NextResponse.json({ ok: false, error: "Retell not configured" }, { status: 400 });
+    }
+
+    const apiKey = (connection.apiKeyEncrypted || process.env.RETELL_API_KEY || "").trim();
+    if (!apiKey) {
+      await updateSyncMeta(auth.orgId, {
+        lastSyncAt: new Date().toISOString(),
+        lastSyncError: "Missing Retell API key",
+        lastSyncTraceId: null,
+        lastSyncHttpStatus: 400,
+        lastSyncEndpointTried: null,
+      });
+      return NextResponse.json({ ok: false, error: "Missing Retell API key" }, { status: 400 });
+    }
+
+    const list = await retellListCalls({
+      agentId: connection.agentId,
+      apiKey,
+      limit: 100,
+      signal: req.signal,
+    });
+
+    if (!list.ok) {
+      await updateSyncMeta(auth.orgId, {
+        lastSyncAt: new Date().toISOString(),
+        lastSyncError: "Retell sync failed",
+        lastSyncTraceId: null,
+        lastSyncHttpStatus: list.status ?? 502,
+        lastSyncEndpointTried: list.chosenUrl ?? list.tried?.[list.tried.length - 1]?.url ?? null,
+      });
+      return NextResponse.json({ ok: false, error: "Retell sync failed" }, { status: 502 });
+    }
+
+    let upserted = 0;
+    for (const call of list.calls || []) {
+      if (req.signal.aborted) break;
+      const parsed = parseRetellPayload(call as Record<string, unknown>);
+      if (!parsed) continue;
+      await upsertRetellCall(auth.orgId, parsed);
+      upserted += 1;
+    }
+
     const now = new Date().toISOString();
     await updateSyncMeta(auth.orgId, {
       lastSyncAt: now,
       lastSyncError: null,
       lastSyncTraceId: null,
-      lastSyncHttpStatus: 200,
-      lastSyncEndpointTried: "webhook",
+      lastSyncHttpStatus: list.status ?? 200,
+      lastSyncEndpointTried: list.chosenUrl,
     });
 
-    return NextResponse.json({ ok: true, mode: "webhook", upserted: 0 });
+    return NextResponse.json({ ok: true, mode: "retell", upserted });
   } catch (err) {
     if (req.signal.aborted || isAbortError(err)) {
       return NextResponse.json({ ok: false, error: "aborted" }, { status: 499 });

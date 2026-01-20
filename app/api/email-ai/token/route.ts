@@ -86,16 +86,16 @@ export async function GET(req: Request) {
       select: { orgId: true },
       orderBy: { orgId: "asc" },
     });
-    if (membership?.orgId) {
+    if (membership?.orgId && connected) {
       const os = await prisma.orgSettings.findUnique({
         where: { orgId: membership.orgId },
         select: { data: true },
       });
       const data = (os?.data as Record<string, unknown>) || {};
       const next = writeGmailIntegration(data, {
-        connected,
+        connected: true,
         accountEmail: session.user.email ?? null,
-        ...(connected ? {} : { lastError: "Disconnected" }),
+        lastError: null,
       });
       await prisma.orgSettings.upsert({
         where: { orgId: membership.orgId },

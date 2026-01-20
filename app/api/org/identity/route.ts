@@ -14,6 +14,7 @@ export async function GET() {
   if (!session?.user?.email) {
     return NextResponse.json({ ok: false, error: "Not authenticated" }, { status: 401 });
   }
+  const isSuperAdmin = Boolean((session as any)?.isSuperAdmin);
 
   const membership = await prisma.membership.findFirst({
     where: { user: { email: session.user.email } },
@@ -50,5 +51,6 @@ export async function GET() {
     branding,
     demoMode: Boolean(settingsData.demoMode),
     entitlements,
+    isSuperAdmin,
   });
 }

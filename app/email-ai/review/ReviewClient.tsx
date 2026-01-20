@@ -62,6 +62,9 @@ export default function ReviewClient() {
     const API =
       (typeof location !== 'undefined' && location.origin ? location.origin : '') +
       '/api/email-ai/action';
+    const REWRITE_API =
+      (typeof location !== 'undefined' && location.origin ? location.origin : '') +
+      '/api/email-ai/rewrite';
 
     const postJSON = async (url: string, body: any) => {
       const res = await fetch(url, {
@@ -234,6 +237,56 @@ export default function ReviewClient() {
     };
 
     bulkSend?.addEventListener('click', onBulkSend);
+
+    async function ensureSuggested(id: string, row: HTMLElement | null) {
+      const raw = row?.getAttribute('data-suggested') || '';
+      if (raw && raw.trim()) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed?.body) return parsed as { subject?: string; body?: string };
+        } catch {
+          // fallthrough
+        }
+      }
+
+      const res = await postJSON(API, { op: 'queue_suggested', id });
+      const next = res?.suggested;
+      if (next && row) {
+        row.setAttribute('data-suggested', JSON.stringify(next));
+        const pre = row.querySelector('.js-suggested-body');
+        if (pre && next.body) pre.textContent = next.body;
+        const subjectSpan = row.querySelector('.js-suggested-subject');
+        if (subjectSpan && next.subject) subjectSpan.textContent = next.subject;
+      }
+      return next || null;
+    }
+
+    // ---------- rewrite single ----------
+    const onRewrite = async (btn: HTMLButtonElement) => {
+      const row = btn.closest('li') as HTMLElement | null;
+      const id = row?.getAttribute('data-id') || '';
+      if (!id) return;
+      btn.disabled = true;
+      try {
+        const seed = await ensureSuggested(id, row);
+        const res = await postJSON(REWRITE_API, { logId: id, subject: seed?.subject, body: seed?.body });
+        const next = res?.suggested;
+        if (next && row) {
+          row.setAttribute('data-suggested', JSON.stringify(next));
+          const pre = row.querySelector('.js-suggested-body');
+          if (pre && next.body) pre.textContent = next.body;
+          const subjectSpan = row.querySelector('.js-suggested-subject');
+          if (subjectSpan && next.subject) subjectSpan.textContent = next.subject;
+        }
+      } catch (e: any) {
+        alert(e?.message || 'Rewrite failed');
+      } finally {
+        btn.disabled = false;
+      }
+    };
+
+    const rewriteButtons = $$('.js-rewrite') as HTMLButtonElement[];
+    rewriteButtons.forEach((b) => b.addEventListener('click', () => onRewrite(b)));
     bulkSkip?.addEventListener('click', onBulkSkip);
 
     // ---------- row actions (approve / draft / skip) ----------
@@ -249,7 +302,6 @@ export default function ReviewClient() {
       const id = row.getAttribute('data-id') || '';
       if (!id) return;
 
-      // parse suggested
       let suggested: { subject?: string; body?: string } | null = null;
       try {
         const raw = row.getAttribute('data-suggested');
@@ -263,6 +315,9 @@ export default function ReviewClient() {
 
       if (btn.classList.contains('js-approve')) {
         payload.op = 'approve';
+        if (!suggested?.body) {
+          suggested = await ensureSuggested(id, row);
+        }
         payload.subject = suggested?.subject || subjectFallback || '';
         payload.body = suggested?.body || '';
       } else if (btn.classList.contains('js-draft')) {
