@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { canAccessSuperAdminByEmail } from "@/lib/roles";
+import { readGoogleCalendarIntegration } from "@/lib/orgSettings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -58,17 +59,15 @@ export async function GET(req: Request) {
   if (!org) return json({ ok: false, error: "Org not found" }, 404);
 
   const data = (os?.data as Record<string, unknown>) || {};
-  const calendarId = typeof data.googleCalendarId === "string" ? data.googleCalendarId : null;
-  const accountEmail =
-    (typeof data.googleAccountEmail === "string" && data.googleAccountEmail) ||
-    connection?.accountEmail ||
-    null;
+  const google = readGoogleCalendarIntegration(data);
+  const calendarId = google.calendarId;
+  const accountEmail = google.accountEmail || connection?.accountEmail || null;
 
   return json({
     ok: true,
     org,
     google: {
-      connected: Boolean(calendarId && connection),
+      connected: Boolean(calendarId && connection && google.connected),
       calendarId,
       accountEmail,
       expiresAt: connection?.expiresAt ?? null,

@@ -6,6 +6,7 @@ import { authOptions } from "@/lib/auth";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
 import { requireSessionOrgFeature } from "@/lib/entitlements";
+import { readGmailIntegration, writeGmailIntegration } from "@/lib/orgSettings";
 
 // ─────────────────────────────────────────────
 // Environment / Route config
@@ -54,7 +55,26 @@ async function getAuthedContext() {
 
   const session = await getServerSession(authOptions);
   const googleConnected = Boolean((session as any)?.google?.access_token);
-  return { orgId: gate.orgId, googleConnected };
+  const orgSettings = await prisma.orgSettings.findUnique({
+    where: { orgId: gate.orgId },
+    select: { data: true },
+  });
+  const data = (orgSettings?.data as Record<string, unknown>) || {};
+  let gmailConnected = readGmailIntegration(data).connected;
+  if (googleConnected) {
+    const next = writeGmailIntegration(data, {
+      connected: true,
+      accountEmail: session?.user?.email ?? null,
+      lastError: null,
+    });
+    await prisma.orgSettings.upsert({
+      where: { orgId: gate.orgId },
+      create: { orgId: gate.orgId, data: next as any },
+      update: { data: next as any },
+    });
+    gmailConnected = true;
+  }
+  return { orgId: gate.orgId, googleConnected, gmailConnected };
 }
 
 // ─────────────────────────────────────────────
@@ -275,7 +295,7 @@ export async function POST(req: Request) {
     });
 
     return json(
-      { ok: true, googleConnected: ctx.googleConnected, settings: s },
+      { ok: true, orgId: ctx.orgId, googleConnected: ctx.googleConnected, gmailConnected: ctx.gmailConnected, settings: s },
       200
     );
   } catch (e: any) {

@@ -174,7 +174,7 @@ const DEMO_ITEMS: InboxItem[] = [
 function actionLabel(action: string | null) {
   const map: Record<string, string> = {
     queued_for_review: "Needs review",
-    draft_created: "Drafted",
+    draft_created: "Draft created",
     draft_preview: "Draft preview",
     auto_sent: "Auto-sent",
     sent: "Sent",
@@ -206,6 +206,7 @@ export default function InboxClient() {
   const [syncState, setSyncState] = useState<SyncState>({});
   const [tokenState, setTokenState] = useState<TokenResp | null>(null);
   const [identity, setIdentity] = useState<OrgIdentity | null>(null);
+  const [gmailConnected, setGmailConnected] = useState(true);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -293,6 +294,7 @@ export default function InboxClient() {
       setItems(Array.isArray(j.items) ? j.items : []);
       setSettings(j.inboxSettings ?? null);
       setSyncState(j.syncState ?? {});
+      setGmailConnected(j.gmailConnected !== false);
     } catch (err: any) {
       setSyncError(err?.message || "Failed to load inbox");
     } finally {
@@ -728,6 +730,18 @@ export default function InboxClient() {
     );
   }
 
+  if (!gmailConnected) {
+    return (
+      <div className="p-6 space-y-4">
+        <h1 className="text-2xl font-semibold">Email AI Inbox</h1>
+        <p className="text-zinc-600">Connect Gmail to view emails and drafts.</p>
+        <Button variant="primary" onClick={() => signIn("google", { callbackUrl: "/email-ai" })}>
+          Connect Gmail
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-4">
@@ -773,7 +787,7 @@ export default function InboxClient() {
       )}
       {!tokenState?.connected && (
         <Card className="text-sm text-zinc-600">
-          Google is disconnected. Connect to enable live sync and autonomous drafting.
+          Google is disconnected. Connect to enable live sync and Gmail actions.
         </Card>
       )}
 
@@ -902,9 +916,8 @@ export default function InboxClient() {
         </label>
         <Badge variant="neutral">{selectedCount} selected</Badge>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Button variant="primary" disabled={!selectedCount} onClick={() => bulkAction("approve")}
-          >
-            Approve drafts
+          <Button variant="primary" disabled={!selectedCount} onClick={() => bulkAction("approve")}>
+            Send selected
           </Button>
           <Button variant="secondary" disabled={!selectedCount} onClick={() => bulkAction("skip")}>
             Mark done / archive
@@ -1110,7 +1123,7 @@ export default function InboxClient() {
                 />
 
                 <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3" key={detail.id}>
-                  <div className="text-xs font-semibold text-zinc-600">Draft</div>
+                  <div className="text-xs font-semibold text-zinc-600">Suggested reply</div>
                   <div className="mt-2 space-y-2">
                     <Input
                       ref={draftSubjectRef}
@@ -1128,7 +1141,7 @@ export default function InboxClient() {
                 </div>
 
                 <div className="rounded-xl border border-zinc-200 bg-white p-3 text-xs text-zinc-600">
-                  <div className="font-semibold text-zinc-700">Why this draft</div>
+                  <div className="font-semibold text-zinc-700">Why this suggestion</div>
                   <div className="mt-1">
                     {detail.ai?.reasons?.join(" • ") || "Deterministic signals plus AI assistance."}
                   </div>
@@ -1199,7 +1212,7 @@ export default function InboxClient() {
                   doAction("approve", detail.id, { subject, body });
                 }}
               >
-                Approve & Send
+                Send now
               </Button>
               <Button
                 variant="secondary"
@@ -1209,10 +1222,10 @@ export default function InboxClient() {
                   doAction("save_draft", detail.id, { subject, body });
                 }}
               >
-                Save Draft
+                Create Gmail draft
               </Button>
               <Button variant="ghost" onClick={() => doAction("skip", detail.id)}>
-                Discard
+                Mark done
               </Button>
             </div>
           )}

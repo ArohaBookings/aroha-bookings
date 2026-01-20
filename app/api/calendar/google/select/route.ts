@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { readGoogleCalendarIntegration, writeGoogleCalendarIntegration } from "@/lib/orgSettings";
 
 export const runtime = "nodejs";
 
@@ -46,9 +47,10 @@ export async function GET() {
       select: { data: true },
     });
 
-    const data = (os?.data as any) ?? {};
-    const googleCalendarId = (data.googleCalendarId as string | undefined) ?? null;
-    const googleAccountEmail = (data.googleAccountEmail as string | undefined) ?? null;
+    const data = (os?.data as Record<string, unknown>) ?? {};
+    const google = readGoogleCalendarIntegration(data);
+    const googleCalendarId = google.calendarId;
+    const googleAccountEmail = google.accountEmail;
 
     // Check if we have a connection row for this org/provider/email
     const connection = await prisma.calendarConnection.findFirst({
@@ -63,7 +65,7 @@ export async function GET() {
       orderBy: { updatedAt: "desc" },
     });
 
-    const isConnected = Boolean(googleCalendarId && connection);
+    const isConnected = Boolean(google.connected && googleCalendarId && connection);
 
     return NextResponse.json(
       {
@@ -145,14 +147,14 @@ export async function POST(req: Request) {
       connectionId = existing.id;
     }
 
-// 4) Upsert OrgSettings JSON with googleCalendarId + googleAccountEmail
+// 4) Upsert OrgSettings JSON with data.integrations.googleCalendar
 const existing = await prisma.orgSettings.upsert({
   where: { orgId },
   create: { orgId, data: {} },
   update: {},
 });
 
-const data = { ...(existing.data as any) };
+    const data = { ...(existing.data as Record<string, unknown>) };
 
 // ✅ define `connection` so TS stops complaining
 const connection = connectionId
@@ -162,31 +164,38 @@ const connection = connectionId
     })
   : null;
 
-if (isDisconnect) {
-  delete data.googleCalendarId;
-  // keep googleAccountEmail or also remove it if you want clean slate:
-  // delete data.googleAccountEmail;
-} else {
-  data.googleCalendarId = calendarId;
-  // Store which Google account this org is tied to (for display)
-  data.googleAccountEmail = connection?.accountEmail ?? email;
-}
+    let next = data;
+    if (isDisconnect) {
+      next = writeGoogleCalendarIntegration(data, {
+        connected: false,
+        calendarId: null,
+        accountEmail: null,
+        syncEnabled: false,
+      });
+    } else {
+      next = writeGoogleCalendarIntegration(data, {
+        connected: true,
+        calendarId,
+        accountEmail: connection?.accountEmail ?? email,
+        syncEnabled: true,
+      });
+    }
 
-await prisma.orgSettings.update({
-  where: { orgId },
-  data: { data },
-});
+    await prisma.orgSettings.update({
+      where: { orgId },
+      data: { data: next as any },
+    });
 
-return NextResponse.json(
-  {
-    ok: true,
-    mode: isDisconnect ? "disconnected" : "connected",
-    calendarId: isDisconnect ? null : calendarId,
-    connectionId,
-    accountEmail: connection?.accountEmail ?? email,
-  },
-  { status: 200 },
-);
+    return NextResponse.json(
+      {
+        ok: true,
+        mode: isDisconnect ? "disconnected" : "connected",
+        calendarId: isDisconnect ? null : calendarId,
+        connectionId,
+        accountEmail: isDisconnect ? null : connection?.accountEmail ?? email,
+      },
+      { status: 200 },
+    );
 
   } catch (err: any) {
     if (err instanceof Error && err.message === "AUTH_MISSING") {

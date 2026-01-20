@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { overlaps } from "@/lib/retell/time";
 import { getCalendarClient } from "@/lib/integrations/google/calendar";
+import { readGoogleCalendarIntegration } from "@/lib/orgSettings";
 import { explainAvailabilityReasons, explainDurationSignal, explainRankedSlot } from "@/lib/ai/explain";
 
 type Reason = { code: string; detail: string };
@@ -155,18 +156,18 @@ export async function explainAvailability(input: {
 
   try {
     const data = (orgSettings?.data as Record<string, unknown>) || {};
-    const calendarId = typeof data.googleCalendarId === "string" ? data.googleCalendarId : null;
-    if (calendarId) {
+    const google = readGoogleCalendarIntegration(data);
+    if (google.calendarId && google.connected && google.syncEnabled) {
       const client = await getCalendarClient(org.id);
       if (client) {
         const resp = await client.freebusy.query({
           requestBody: {
             timeMin: input.start.toISOString(),
             timeMax: input.end.toISOString(),
-            items: [{ id: calendarId }],
+            items: [{ id: google.calendarId }],
           },
         });
-        const busy = resp.data.calendars?.[calendarId]?.busy ?? [];
+        const busy = resp.data.calendars?.[google.calendarId]?.busy ?? [];
         const blocked = busy.some((b) => {
           if (!b.start || !b.end) return false;
           return overlaps(input.start, input.end, new Date(b.start as string), new Date(b.end as string));

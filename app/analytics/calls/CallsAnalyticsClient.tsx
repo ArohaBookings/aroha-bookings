@@ -1097,7 +1097,12 @@ React.useEffect(() => {
 
       <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
         <Card className="p-3">
-          <div className="max-h-[70vh] space-y-2 overflow-y-auto pr-1">
+          <div
+            className="max-h-[70vh] space-y-2 overflow-y-auto pr-1"
+            onScroll={() => {
+              interactionRef.current = Date.now();
+            }}
+          >
             {loading && calls.length === 0 ? (
               <div className="space-y-2">
                 {skeletonKeys.map((key) => (

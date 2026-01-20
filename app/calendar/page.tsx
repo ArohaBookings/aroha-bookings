@@ -9,7 +9,7 @@
      filter chips, stats row, closed-day badges, safe empty states.
    • Future-proofed: helper URLs for online booking deep-links by day & staff.
    • Google Calendar sync:
-       - Reads org’s chosen googleCalendarId from OrgSettings.data.
+       - Reads org’s chosen calendarId from OrgSettings.data.integrations.googleCalendar.
        - On render, pulls Google events for the visible range into appointments.
        - Connect chip POSTs /api/calendar/google/select (no more GET error).
 
@@ -36,7 +36,8 @@ import { unstable_noStore as noStore } from "next/cache";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { requireOrgOrPurchase } from "@/lib/requireOrgOrPurchase";
-import { getGCal } from "@/lib/google-calendar";
+import { getCalendarClient } from "@/lib/integrations/google/calendar";
+import { readGoogleCalendarIntegration, writeGoogleCalendarIntegration } from "@/lib/orgSettings";
 import { getOrgEntitlements } from "@/lib/entitlements";
 
 import {
@@ -84,6 +85,7 @@ type ApptRow = {
   endsAt: Date;
   customerName: string;
   customerPhone: string;
+  source?: string | null;
   staffId: string | null;
   serviceId: string | null;
   staff: { id: string; name: string } | null;
@@ -112,6 +114,7 @@ type Block = {
   /** Pass through to editor so phone/name prefill survives */
   _customerPhone: string;
   _customerName: string;
+  _originTag?: "Aroha booking" | "Google busy block" | "Manual";
 };
 
 /* ───────────────────────────────────────────────────────────────
@@ -371,7 +374,7 @@ async function syncGoogleToArohaRange(
   rangeEndUTC: Date,
 ): Promise<void> {
   try {
-    const gcal = await getGCal();
+    const gcal = await getCalendarClient(orgId);
     if (!gcal) {
       // No usable Google tokens on this request – just skip quietly.
       return;
@@ -388,24 +391,20 @@ async function syncGoogleToArohaRange(
     const items = res.data.items || [];
     if (!items.length) return;
 
-    const existing = await prisma.appointment.findMany({
-      where: {
-        orgId,
-        source: { startsWith: "google-sync:" },
-      },
-      select: { id: true, source: true },
+    const existingBusy = await prisma.appointment.findMany({
+      where: { orgId, source: { startsWith: "google-busy:" } },
+      select: { id: true, source: true, startsAt: true, endsAt: true },
+    });
+    const busyByEventId = new Map<string, { id: string; startsAt: Date; endsAt: Date }>();
+    existingBusy.forEach((b) => {
+      const match = (b.source || "").match(/^google-busy:(.+)$/);
+      if (match?.[1]) busyByEventId.set(match[1], { id: b.id, startsAt: b.startsAt, endsAt: b.endsAt });
     });
 
-    const existingEventIds = new Set<string>();
-    for (const a of existing) {
-      const src = a.source || "";
-      const match = src.match(/^google-sync:(.+)$/);
-      if (match?.[1]) existingEventIds.add(match[1]);
-    }
-
     for (const ev of items) {
+      if (ev.status === "cancelled") continue;
       const eventId = ev.id;
-      if (!eventId || existingEventIds.has(eventId)) continue;
+      if (!eventId) continue;
 
       const startIso = ev.start?.dateTime || ev.start?.date;
       const endIso = ev.end?.dateTime || ev.end?.date;
@@ -413,7 +412,7 @@ async function syncGoogleToArohaRange(
 
       const startsAt = new Date(startIso);
       const endsAt = new Date(endIso);
-      if (isNaN(startsAt.getTime()) || isNaN(endsAt.getTime())) continue;
+      if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) continue;
 
       const isAllDay = !ev.start?.dateTime && !!ev.start?.date;
       if (isAllDay) {
@@ -421,22 +420,82 @@ async function syncGoogleToArohaRange(
         endsAt.setHours(17, 0, 0, 0);
       }
 
+      const sourceFlag = (ev.extendedProperties?.private as Record<string, string> | undefined)?.source;
+      const bookingId = (ev.extendedProperties?.private as Record<string, string> | undefined)?.bookingId;
+
+      if (sourceFlag === "arohabookings" && bookingId) {
+        const appt = await prisma.appointment.findUnique({
+          where: { id: bookingId },
+          select: { id: true, startsAt: true, endsAt: true, externalCalendarEventId: true },
+        });
+        if (appt) {
+          const needsTimeUpdate =
+            appt.startsAt.getTime() !== startsAt.getTime() || appt.endsAt.getTime() !== endsAt.getTime();
+          await prisma.appointment.update({
+            where: { id: appt.id },
+            data: {
+              ...(needsTimeUpdate ? { startsAt, endsAt } : {}),
+              externalProvider: "google",
+              externalCalendarEventId: eventId,
+              externalCalendarId: calendarId,
+              syncedAt: new Date(),
+            },
+          });
+        }
+        continue;
+      }
+
+      const existing = busyByEventId.get(eventId);
+      if (existing) {
+        if (existing.startsAt.getTime() !== startsAt.getTime() || existing.endsAt.getTime() !== endsAt.getTime()) {
+          await prisma.appointment.update({
+            where: { id: existing.id },
+            data: {
+              startsAt,
+              endsAt,
+              customerName: ev.summary || "Google busy",
+              customerPhone: "",
+              source: `google-busy:${eventId}`,
+            },
+          });
+        }
+        continue;
+      }
+
       await prisma.appointment.create({
         data: {
           orgId,
           startsAt,
           endsAt,
-          customerName: ev.summary || "Google event",
+          customerName: ev.summary || "Google busy",
           customerPhone: "",
           status: "SCHEDULED",
-          source: `google-sync:${eventId}`,
+          source: `google-busy:${eventId}`,
         },
       });
-
-      existingEventIds.add(eventId);
     }
+
+    const os = await prisma.orgSettings.findUnique({ where: { orgId }, select: { data: true } });
+    const next = writeGoogleCalendarIntegration(
+      (os?.data as Record<string, unknown>) || {},
+      { lastSyncAt: new Date().toISOString(), lastSyncError: null }
+    );
+    await prisma.orgSettings.upsert({
+      where: { orgId },
+      create: { orgId, data: next as any },
+      update: { data: next as any },
+    });
   } catch (err) {
     console.error("Error in Google → Aroha calendar sync:", err);
+    try {
+      const existing = await prisma.orgSettings.findUnique({ where: { orgId }, select: { data: true } });
+      const data = (existing?.data as Record<string, unknown>) || {};
+      const next = writeGoogleCalendarIntegration(data, {
+        lastSyncError: err instanceof Error ? err.message : "Google sync failed",
+        lastSyncAt: new Date().toISOString(),
+      });
+      await prisma.orgSettings.update({ where: { orgId }, data: { data: next as any } });
+    } catch {}
   }
 }
 
@@ -464,12 +523,13 @@ export default async function CalendarPage({
   const isSuperAdmin = !!gate.isSuperAdmin;
   const org = (gate.org as OrgRow | null) ?? null;
 
-  // --- Google Calendar connection status (OrgSettings -> data.googleCalendarId) ---
+  // --- Google Calendar connection status (OrgSettings -> data.integrations.googleCalendar) ---
   let googleCalendarId: string | null = null;
   let googleAccountEmail: string | null = null;
   let calendarSyncErrors: Array<{ appointmentId?: string; error?: string; ts?: string }> = [];
   let calendarLastSyncAt: string | null = null;
   let needsReconnect = false;
+  let googleConnectedFlag = false;
 
   if (org) {
     try {
@@ -485,10 +545,12 @@ export default async function CalendarPage({
         }),
       ]);
       const data = (os?.data as any) ?? {};
-      googleCalendarId = (data.googleCalendarId as string) ?? null;
-      googleAccountEmail = (data.googleAccountEmail as string) ?? connection?.accountEmail ?? null;
+      const google = readGoogleCalendarIntegration(data);
+      googleCalendarId = google.calendarId;
+      googleAccountEmail = google.accountEmail ?? connection?.accountEmail ?? null;
+      googleConnectedFlag = google.connected && google.syncEnabled;
       calendarSyncErrors = Array.isArray(data.calendarSyncErrors) ? data.calendarSyncErrors : [];
-      calendarLastSyncAt = typeof data.calendarLastSyncAt === "string" ? data.calendarLastSyncAt : null;
+      calendarLastSyncAt = google.lastSyncAt;
       needsReconnect = connection?.expiresAt
         ? connection.expiresAt.getTime() < Date.now() - 2 * 60 * 1000
         : false;
@@ -499,10 +561,11 @@ export default async function CalendarPage({
       calendarSyncErrors = [];
       calendarLastSyncAt = null;
       needsReconnect = false;
+      googleConnectedFlag = false;
     }
   }
 
-  const isGoogleConnected = Boolean(googleCalendarId);
+  const isGoogleConnected = Boolean(googleCalendarId) && googleConnectedFlag;
 
   // Paywall: either org exists OR they still have a valid purchase token
   const hasPurchase = Boolean(org || gate.purchaseToken);
@@ -674,6 +737,7 @@ export default async function CalendarPage({
           endsAt: true,
           customerName: true,
           customerPhone: true,
+          source: true,
           staffId: true,
           serviceId: true,
           status: true,
@@ -724,6 +788,13 @@ export default async function CalendarPage({
     const id = String(err?.appointmentId || "").trim();
     const message = String(err?.error || "").trim();
     if (id && message) syncErrorByAppt.set(id, { message, ts: err?.ts });
+  }
+
+  function resolveOriginTag(a: ApptRow): Block["_originTag"] {
+    const source = (a.source || "").toLowerCase();
+    if (source.startsWith("google-busy:")) return "Google busy block";
+    if (source.startsWith("manual")) return "Manual";
+    return "Aroha booking";
   }
 
   function computeBlockLayoutForDay(
@@ -785,6 +856,7 @@ if (view === "week") {
       serviceId: a.serviceId ?? null,
       _customerPhone: a.customerPhone ?? "",
       _customerName: a.customerName ?? "",
+      _originTag: resolveOriginTag(a),
       // _customerId removed from Block-typed object (was causing TS2353)
     };
 
@@ -832,6 +904,7 @@ if (view === "day") {
       serviceId: a.serviceId ?? null,
       _customerPhone: a.customerPhone ?? "",
       _customerName: a.customerName ?? "",
+      _originTag: resolveOriginTag(a),
       // _customerId removed from Block-typed object (was causing TS2353)
     };
 

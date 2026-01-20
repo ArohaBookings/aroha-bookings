@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getGmailProfileEmail } from "@/lib/google";
+import { prisma } from "@/lib/db";
+import { writeGmailIntegration } from "@/lib/orgSettings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -77,6 +79,29 @@ export async function GET(req: Request) {
         live_ok = false;
         live_email = null;
       }
+    }
+
+    const membership = await prisma.membership.findFirst({
+      where: { user: { email: session.user.email } },
+      select: { orgId: true },
+      orderBy: { orgId: "asc" },
+    });
+    if (membership?.orgId) {
+      const os = await prisma.orgSettings.findUnique({
+        where: { orgId: membership.orgId },
+        select: { data: true },
+      });
+      const data = (os?.data as Record<string, unknown>) || {};
+      const next = writeGmailIntegration(data, {
+        connected,
+        accountEmail: session.user.email ?? null,
+        ...(connected ? {} : { lastError: "Disconnected" }),
+      });
+      await prisma.orgSettings.upsert({
+        where: { orgId: membership.orgId },
+        create: { orgId: membership.orgId, data: next as any },
+        update: { data: next as any },
+      });
     }
 
     return NextResponse.json(

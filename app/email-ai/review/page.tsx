@@ -9,6 +9,7 @@ import Card from "@/components/ui/Card";
 import EmptyState from "@/components/ui/EmptyState";
 import Input from "@/components/ui/Input";
 import Select from "@/components/ui/Select";
+import { readGmailIntegration } from "@/lib/orgSettings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -67,13 +68,20 @@ export default async function ReviewQueuePage({
     return <div className="p-6">No organisation linked to this user.</div>;
   }
 
-  const settings = orgId
-    ? await prisma.emailAISettings.findUnique({
-        where: { orgId },
-        select: { minConfidenceToSend: true },
-      })
-    : null;
+  const [settings, orgSettings] = orgId
+    ? await Promise.all([
+        prisma.emailAISettings.findUnique({
+          where: { orgId },
+          select: { minConfidenceToSend: true },
+        }),
+        prisma.orgSettings.findUnique({
+          where: { orgId },
+          select: { data: true },
+        }),
+      ])
+    : [null, null];
   const confidenceThreshold = settings?.minConfidenceToSend ?? 0.65;
+  const gmailConnected = readGmailIntegration((orgSettings?.data as Record<string, unknown>) || {}).connected;
 
   // --- read filters from query
   const params = await searchParams;
@@ -153,11 +161,11 @@ const items: Row[] = prismaRows.map((r) => ({
   id: r.id,
   createdAt: r.createdAt,
   receivedAt: r.receivedAt ?? null,
-  subject: r.subject ?? null,
-  snippet: r.snippet ?? null,
-  gmailMsgId: r.gmailMsgId ?? null,
-  gmailThreadId: r.gmailThreadId ?? null,
-  rawMeta: r.rawMeta as unknown, // JsonValue → unknown for UI use
+  subject: gmailConnected ? (r.subject ?? null) : null,
+  snippet: gmailConnected ? (r.snippet ?? null) : null,
+  gmailMsgId: gmailConnected ? (r.gmailMsgId ?? null) : null,
+  gmailThreadId: gmailConnected ? (r.gmailThreadId ?? null) : null,
+  rawMeta: gmailConnected ? (r.rawMeta as unknown) : {}, // JsonValue → unknown for UI use
   action: r.action ?? null,
   confidence: typeof r.confidence === "number" ? r.confidence : null,
   classification: r.classification ?? null,
@@ -221,6 +229,30 @@ function timeSince(date: Date) {
         ...extra,
       }
     );
+
+
+
+if (!gmailConnected) {
+  return (
+    <div className="p-6 max-w-4xl mx-auto space-y-4">
+      <Card className="p-6">
+        <h2 className="text-lg font-semibold text-zinc-900">Connect Gmail to view emails</h2>
+        <p className="mt-2 text-sm text-zinc-600">
+          Gmail is disconnected for this organisation. Reconnect to view message content and drafts.
+        </p>
+
+        <div className="mt-4">
+          <Link
+            href="/email-ai/connect"
+            className="inline-flex items-center justify-center rounded-md bg-black px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+          >
+            Connect Gmail
+          </Link>
+        </div>
+      </Card>
+    </div>
+  );
+}
 
   return (
     <div className="p-6 space-y-5 max-w-6xl mx-auto">

@@ -3,6 +3,7 @@ import { google } from "googleapis";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { readGoogleCalendarIntegration } from "@/lib/orgSettings";
 
 /* --------------------------------------------------------------------------
    GOOGLE OAUTH CLIENT FACTORY (Safe, token-shape tolerant)
@@ -92,7 +93,7 @@ function extractGoogleEventId(source?: string | null): string | null {
 function buildTitle(appt: any) {
   const service = appt.service?.name ?? "Appointment";
   const staff = appt.staff?.name ? ` · ${appt.staff.name}` : "";
-  return `${appt.customerName} — ${service}${staff}`;
+  return `${service} — ${appt.customerName}${staff}`;
 }
 
 /** Resolve org's Google calendarId from OrgSettings.data, or null */
@@ -102,12 +103,10 @@ async function getOrgCalendarId(orgId: string): Promise<string | null> {
     select: { data: true },
   });
 
-  const data = (os?.data as any) ?? {};
-  const calendarId = data.googleCalendarId as string | undefined;
-
-  return calendarId && typeof calendarId === "string" && calendarId.trim()
-    ? calendarId.trim()
-    : null;
+  const data = (os?.data as Record<string, unknown>) ?? {};
+  const google = readGoogleCalendarIntegration(data);
+  if (!google.syncEnabled || !google.connected) return null;
+  return google.calendarId || null;
 }
 
 /* --------------------------------------------------------------------------
@@ -132,14 +131,26 @@ export async function pushAppointmentToGoogle(appointmentId: string) {
     const gcal = await getGCal();
     if (!gcal) return; // no usable Google client this request
 
+    const description = [
+      (appt as any).notes || "",
+      "Created by Aroha Bookings",
+      `Booking ID: ${appt.id}`,
+      appt.org?.name ? `Organization: ${appt.org.name}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
     const event = {
       summary: buildTitle(appt),
-      description: (appt as any).notes || undefined,
+      description,
       start: { dateTime: appt.startsAt.toISOString() },
       end: { dateTime: appt.endsAt.toISOString() },
       attendees: (appt as any).customerEmail
         ? [{ email: (appt as any).customerEmail }]
         : undefined,
+      extendedProperties: {
+        private: { source: "arohabookings", bookingId: appt.id },
+      },
     };
 
     const res = await gcal.events.insert({
@@ -182,14 +193,26 @@ export async function updateAppointmentInGoogle(appointmentId: string) {
     const gcal = await getGCal();
     if (!gcal) return;
 
+    const description = [
+      (appt as any).notes || "",
+      "Created by Aroha Bookings",
+      `Booking ID: ${appt.id}`,
+      appt.org?.name ? `Organization: ${appt.org.name}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
     const patch = {
       summary: buildTitle(appt),
-      description: (appt as any).notes || undefined,
+      description,
       start: { dateTime: appt.startsAt.toISOString() },
       end: { dateTime: appt.endsAt.toISOString() },
       attendees: (appt as any).customerEmail
         ? [{ email: (appt as any).customerEmail }]
         : undefined,
+      extendedProperties: {
+        private: { source: "arohabookings", bookingId: appt.id },
+      },
     };
 
     await gcal.events.patch({

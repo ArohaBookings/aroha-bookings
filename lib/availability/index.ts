@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { addMinutes, overlaps } from "@/lib/retell/time";
 import { getCalendarClient } from "@/lib/integrations/google/calendar";
 import { isSlotHeld, resolveBookingHolds } from "@/lib/booking/holds";
+import { readGoogleCalendarIntegration } from "@/lib/orgSettings";
 
 type Slot = { start: string; end: string; staffId?: string | null };
 
@@ -13,6 +14,7 @@ type AvailabilityInput = {
   serviceId?: string;
   staffId?: string;
   tz?: string;
+  durationMin?: number;
 };
 
 type Rules = {
@@ -60,8 +62,8 @@ async function getCalendarId(orgId: string) {
     select: { data: true },
   });
   const data = (os?.data as Record<string, unknown>) || {};
-  const id = data.googleCalendarId;
-  return typeof id === "string" && id.trim() ? id.trim() : null;
+  const google = readGoogleCalendarIntegration(data);
+  return typeof google.calendarId === "string" && google.calendarId.trim() ? google.calendarId.trim() : null;
 }
 
 async function getGoogleBusy(orgId: string, timeMin: Date, timeMax: Date) {
@@ -90,7 +92,7 @@ async function getGoogleBusy(orgId: string, timeMin: Date, timeMax: Date) {
 }
 
 export async function getAvailability(input: AvailabilityInput): Promise<{ slots: Slot[]; meta: Record<string, unknown> }> {
-  const { orgId, from, to, serviceId, staffId } = input;
+  const { orgId, from, to, serviceId, staffId, durationMin } = input;
 
   const [rules, hours, schedules, appts, holidays, service, googleBusy, orgSettings] = await Promise.all([
     getRules(orgId),
@@ -105,6 +107,7 @@ export async function getAvailability(input: AvailabilityInput): Promise<{ slots
         startsAt: { lt: to },
         endsAt: { gt: from },
         status: { not: "CANCELLED" },
+        NOT: { source: { startsWith: "google-busy:" } },
       },
       select: { staffId: true, startsAt: true, endsAt: true },
     }),
@@ -121,7 +124,11 @@ export async function getAvailability(input: AvailabilityInput): Promise<{ slots
 
   const holds = resolveBookingHolds((orgSettings?.data as Record<string, unknown>) || {});
 
-  const durationMin = service?.durationMin ?? rules.slotIntervalMin;
+  const resolvedDuration =
+    typeof durationMin === "number" && Number.isFinite(durationMin)
+      ? clampMin(durationMin, 5, 24 * 60, rules.slotIntervalMin)
+      : rules.slotIntervalMin;
+  const durationMinFinal = service?.durationMin ?? resolvedDuration;
   const staffIds = staffId ? [staffId] : Array.from(new Set(schedules.map((s) => s.staffId)));
 
   const hoursByDow = new Map<number, { openMin: number; closeMin: number }>();
@@ -182,13 +189,13 @@ export async function getAvailability(input: AvailabilityInput): Promise<{ slots
       for (const sched of staffSched) {
         const open = Math.max(baseOpen, sched.startMin);
         const close = Math.min(baseClose, sched.endMin);
-        if (close - open < durationMin) continue;
+        if (close - open < durationMinFinal) continue;
 
         let cursorMin = alignToInterval(open, rules.slotIntervalMin);
-        while (cursorMin + durationMin <= close) {
+        while (cursorMin + durationMinFinal <= close) {
           const start = new Date(day);
           start.setHours(0, cursorMin, 0, 0);
-          const end = addMinutes(start, durationMin);
+          const end = addMinutes(start, durationMinFinal);
 
           if (start < minStart) {
             cursorMin += rules.slotIntervalMin;
@@ -217,7 +224,7 @@ export async function getAvailability(input: AvailabilityInput): Promise<{ slots
   return {
     slots,
     meta: {
-      durationMin,
+      durationMin: durationMinFinal,
       slotIntervalMin: rules.slotIntervalMin,
       leadTimeMin: rules.leadTimeMin,
       bufferBeforeMin: rules.bufferBeforeMin,

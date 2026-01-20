@@ -1,6 +1,7 @@
 // lib/integrations/google/syncAppointment.ts
 import { prisma } from "@/lib/db";
 import { getCalendarClient } from "@/lib/integrations/google/calendar";
+import { readGoogleCalendarIntegration, writeGoogleCalendarIntegration } from "@/lib/orgSettings";
 
 type SyncErrorPayload = {
   action: "create" | "update" | "delete";
@@ -15,9 +16,9 @@ async function getOrgCalendarId(orgId: string): Promise<string | null> {
     select: { data: true },
   });
   const data = (os?.data as Record<string, unknown>) || {};
-  const calendarId = data.googleCalendarId;
-  if (typeof calendarId === "string" && calendarId.trim()) return calendarId.trim();
-  return null;
+  const google = readGoogleCalendarIntegration(data);
+  if (!google.syncEnabled || !google.connected) return null;
+  return google.calendarId || null;
 }
 
 async function logSyncError(orgId: string, payload: SyncErrorPayload) {
@@ -36,10 +37,14 @@ async function logSyncError(orgId: string, payload: SyncErrorPayload) {
 
     list.unshift(payload as unknown);
     data.calendarSyncErrors = list.slice(0, 20);
+    const next = writeGoogleCalendarIntegration(data, {
+      lastSyncError: payload.error,
+      lastSyncAt: payload.ts,
+    });
 
     await prisma.orgSettings.update({
       where: { orgId },
-      data: { data: data as any },
+      data: { data: next as any },
     });
   } catch (err) {
     console.error("logSyncError failed:", err);
@@ -55,10 +60,11 @@ async function markCalendarSync(orgId: string) {
       select: { data: true },
     });
     const data = { ...(existing.data as Record<string, unknown>) };
-    data.calendarLastSyncAt = new Date().toISOString();
+    const nowIso = new Date().toISOString();
+    const next = writeGoogleCalendarIntegration(data, { lastSyncAt: nowIso, lastSyncError: null });
     await prisma.orgSettings.update({
       where: { orgId },
-      data: { data: data as any },
+      data: { data: next as any },
     });
   } catch (err) {
     console.error("markCalendarSync failed:", err);
@@ -72,7 +78,7 @@ function buildTitle(appt: {
 }) {
   const service = appt.service?.name ?? "Appointment";
   const staff = appt.staff?.name ? ` · ${appt.staff.name}` : "";
-  return `${appt.customerName} — ${service}${staff}`;
+  return `${service} — ${appt.customerName}${staff}`;
 }
 
 export async function createOrUpdateAppointmentEvent(orgId: string, appointmentId: string) {
@@ -89,12 +95,27 @@ export async function createOrUpdateAppointmentEvent(orgId: string, appointmentI
     const client = await getCalendarClient(orgId);
     if (!client) return;
 
+    const description = [
+      appt.notes ?? "",
+      "Created by Aroha Bookings",
+      `Booking ID: ${appt.id}`,
+      appt.org?.name ? `Organization: ${appt.org.name}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
     const event = {
       summary: buildTitle(appt),
-      description: appt.notes ?? undefined,
+      description,
       start: { dateTime: appt.startsAt.toISOString(), timeZone: appt.org.timezone },
       end: { dateTime: appt.endsAt.toISOString(), timeZone: appt.org.timezone },
       attendees: appt.customerEmail ? [{ email: appt.customerEmail }] : undefined,
+      extendedProperties: {
+        private: {
+          source: "arohabookings",
+          bookingId: appt.id,
+        },
+      },
     };
 
     if (appt.externalCalendarEventId && appt.externalProvider === "google") {

@@ -380,7 +380,8 @@ export default function EmailAISettingsPage() {
   const [savingVoice, setSavingVoice] = React.useState(false);
 
   // server flags
-  const [googleConnected, setGoogleConnected] = React.useState<boolean>(false);
+  const [gmailConnected, setGmailConnected] = React.useState<boolean>(true);
+  const [orgId, setOrgId] = React.useState<string | null>(null);
 
   // in-page collections (not separate tables; we’ll store under settings JSON)
   const [templates, setTemplates] = React.useState<Template[]>(STARTER_TEMPLATES);
@@ -433,8 +434,9 @@ export default function EmailAISettingsPage() {
           incoming.knowledgeBaseJson = { ...DEFAULTS.knowledgeBaseJson };
         }
 
-        // read googleConnected flag from API
-        setGoogleConnected(Boolean(j.googleConnected));
+        // read connection flags from API
+        setGmailConnected(Boolean(j.gmailConnected));
+        setOrgId(typeof j.orgId === "string" ? j.orgId : null);
 
         const inboxRes = await fetch("/api/email-ai/inbox-settings", { cache: "no-store" });
         const inboxJson = await inboxRes.json().catch(() => ({}));
@@ -563,7 +565,7 @@ const rOnly: Rule[] = embeddedRaw
     if (normBlock === "__INVALID__")
       return "Blocked-senders regex is invalid. Use e.g. (noreply|newsletter) or /(noreply|newsletter)/i";
 
-    if (s.enabled && !googleConnected) {
+    if (s.enabled && !gmailConnected) {
       return "Connect Gmail before enabling Email AI.";
     }
     return null;
@@ -625,7 +627,7 @@ const rOnly: Rule[] = embeddedRaw
       if (!merged.knowledgeBaseJson) merged.knowledgeBaseJson = { ...DEFAULTS.knowledgeBaseJson };
 
       setS(merged);
-      setGoogleConnected(Boolean(j.googleConnected));
+      setGmailConnected(Boolean(j.gmailConnected));
       setDirty(false);
       if (source === "manual") toast.show("Settings saved.", "success");
     } catch (e: any) {
@@ -877,11 +879,11 @@ Include signature if set. Do not invent facts.`;
       {toast.node}
 
       {/* Gmail connect banner */}
-      {!googleConnected && (
+      {!gmailConnected && (
         <Alert kind="warn">
           Gmail isn’t connected.{" "}
-          <a className="underline" href="/connect/google">
-            Connect Google
+          <a className="underline" href="/email-ai/connect">
+            Connect Gmail
           </a>{" "}
           to enable Email AI.
         </Alert>
@@ -893,18 +895,42 @@ Include signature if set. Do not invent facts.`;
           <label
             className={cx(
               "flex items-center gap-2 mr-3",
-              !googleConnected && "opacity-60 cursor-not-allowed"
+              !gmailConnected && "opacity-60 cursor-not-allowed"
             )}
-            title={!googleConnected ? "Connect Gmail to enable" : undefined}
+            title={!gmailConnected ? "Connect Gmail to enable" : undefined}
           >
             <input
               type="checkbox"
               checked={!!s.enabled}
               onChange={(e) => patch("enabled", e.target.checked)}
-              disabled={!googleConnected}
+              disabled={!gmailConnected}
             />
             <span>Enable Email AI</span>
           </label>
+          <Button variant="secondary" onClick={() => (window.location.href = "/email-ai")}>
+            Go back
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={!gmailConnected || !orgId}
+            onClick={async () => {
+              if (!orgId) return;
+              const res = await fetch("/api/integrations/gmail/disconnect", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ orgId }),
+              });
+              const j = await res.json().catch(() => ({}));
+              if (!res.ok || !j?.ok) {
+                toast.show(j?.error || "Failed to disconnect Gmail.", "error");
+                return;
+              }
+              setGmailConnected(false);
+              toast.show("Gmail disconnected.", "success");
+            }}
+          >
+            Disconnect Gmail
+          </Button>
           <Button
             variant="secondary"
             onClick={() => {

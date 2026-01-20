@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { auth } from "@/lib/auth";
+import { readGmailIntegration } from "@/lib/orgSettings";
 import { getToken } from "next-auth/jwt";
 import { google } from "googleapis";
 
@@ -145,11 +146,19 @@ export async function GET(
       }
     }
 
+    const settingsRow = await prisma.orgSettings.findUnique({
+      where: { orgId: log.orgId },
+      select: { data: true },
+    });
+    const settingsData = (settingsRow?.data as Record<string, unknown>) || {};
+    const gmail = readGmailIntegration(settingsData);
+    const gmailConnected = gmail.connected;
+
     // 4) Build base payload (stable shape for the Edit page)
     const rawMeta = (log.rawMeta ?? {}) as any;
-    const suggested = cloneSmall(rawMeta?.suggested) || undefined;
-    const lastDraftPreview = cloneSmall(rawMeta?.lastDraftPreview) || undefined;
-    const draftId = s(rawMeta?.draftId, "") || undefined;
+    const suggested = gmailConnected ? cloneSmall(rawMeta?.suggested) || undefined : undefined;
+    const lastDraftPreview = gmailConnected ? cloneSmall(rawMeta?.lastDraftPreview) || undefined : undefined;
+    const draftId = gmailConnected ? s(rawMeta?.draftId, "") || undefined : undefined;
     const ai = cloneSmall(rawMeta?.ai) || undefined;
 
     // Provide a Gmail draft edit link if we have a draftId
@@ -162,12 +171,12 @@ export async function GET(
       id: log.id,
       orgId: log.orgId,
       createdAt: iso(log.createdAt),
-      subject: s(log.subject, "(no subject)"),
-      snippet: s(log.snippet, ""),
+      subject: gmailConnected ? s(log.subject, "(no subject)") : "Connect Gmail to view email",
+      snippet: gmailConnected ? s(log.snippet, "") : "",
       classification: s(log.classification, "other"),
       action: s(log.action, "queued_for_review"),
       confidence: typeof log.confidence === "number" ? log.confidence : null,
-      gmailThreadId: s(log.gmailThreadId, "") || null,
+      gmailThreadId: gmailConnected ? s(log.gmailThreadId, "") || null : null,
 
       // edit helpers
       suggested,           // { subject?, body? } if present
@@ -180,15 +189,16 @@ export async function GET(
 
       // tiny meta preview if client wants to show origin
       meta: {
-        from: s(rawMeta?.from, "") || undefined,
-        replyTo: s(rawMeta?.replyTo, "") || undefined,
+        from: gmailConnected ? s(rawMeta?.from, "") || undefined : undefined,
+        replyTo: gmailConnected ? s(rawMeta?.replyTo, "") || undefined : undefined,
       },
       ai,
+      gmailConnected,
     };
 
     // 5) Try to fetch a light Gmail thread preview (soft-fail)
     const accessToken = await ensureGoogleAccessToken(req, session);
-    if (accessToken && base.gmailThreadId) {
+    if (gmailConnected && accessToken && base.gmailThreadId) {
       try {
         const auth2 = new google.auth.OAuth2();
         auth2.setCredentials({ access_token: accessToken });

@@ -4,10 +4,12 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { google } from "googleapis";
+import { google, gmail_v1 } from "googleapis";
 import { getToken } from "next-auth/jwt";
 import { getOrgEntitlements } from "@/lib/entitlements";
 import { resolveEmailIdentity } from "@/lib/emailIdentity";
+import { createHash } from "crypto";
+import { readGmailIntegration } from "@/lib/orgSettings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,7 +26,10 @@ function b64url(s: string) {
     .replace(/=+$/, "");
 }
 
-function header(headers: Array<{ name?: string; value?: string }> | undefined, name: string): string {
+function header(
+  headers: Array<{ name?: string; value?: string }> | undefined,
+  name: string
+): string {
   if (!headers) return "";
   const n = name.toLowerCase();
   const h = headers.find((x) => String(x?.name || "").toLowerCase() === n);
@@ -35,6 +40,10 @@ function normalizeSubject(raw: string | null | undefined): string {
   const s = (raw || "").trim();
   if (!s) return "Re: (no subject)";
   return s.toLowerCase().startsWith("re:") ? s : `Re: ${s}`;
+}
+
+function hashSuggestion(subject: string, body: string) {
+  return createHash("sha256").update(`${subject}\n${body}`).digest("hex").slice(0, 24);
 }
 
 function buildReplyRaw(opts: {
@@ -68,45 +77,20 @@ async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Pick a safe absolute origin for internal fetches (Vercel + local). */
-function resolveOrigin(req: Request): string {
-  // Prefer explicit envs
-  const envOrigin =
-    process.env.NEXTAUTH_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    "https://aroha-bookings.vercel.app";
-
-  // On Vercel behind proxy
-  const proto = req.headers.get("x-forwarded-proto");
-  const host = req.headers.get("x-forwarded-host");
-  if (proto && host) return `${proto}://${host}`;
-
-  // Dev/local
-  try {
-    const u = new URL(req.url);
-    if (u.origin && u.origin !== "null") return u.origin;
-  } catch {
-    /* noop */
-  }
-  return envOrigin;
-}
-
 /* ──────────────────────────────────────────────
    GMAIL ACCESS TOKEN (session → JWT refresh)
 ────────────────────────────────────────────── */
 async function ensureGoogleAccessToken(req: Request, session: any): Promise<string> {
-  // 1) Try session (populated by your auth callbacks)
-  const sessToken = session?.google?.access_token as string | null;
+  const sessToken = (session as any)?.google?.access_token as string | null;
   if (sessToken) return sessToken;
 
-  // 2) Fallback to JWT (server-only) and refresh if needed
   const jwt = await getToken({ req: req as any, raw: false, secureCookie: false });
   const g = (jwt as any) || {};
   const rt = g.google_refresh_token as string | undefined;
   const at = g.google_access_token as string | undefined;
   const exp = typeof g.google_expires_at === "number" ? g.google_expires_at : 0;
 
-  if (at && exp && Date.now() < exp - 60_000) return at; // valid w/ 1m skew
+  if (at && exp && Date.now() < exp - 60_000) return at;
   if (!rt) throw new Error("No Gmail refresh token in JWT");
 
   const body = new URLSearchParams({
@@ -122,7 +106,7 @@ async function ensureGoogleAccessToken(req: Request, session: any): Promise<stri
     body,
   });
 
-  const j = await r.json().catch(() => ({}));
+  const j = await r.json().catch(() => ({} as any));
   if (!r.ok || !j.access_token) {
     throw new Error(`Google token refresh failed: ${j.error || r.status}`);
   }
@@ -139,14 +123,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    // NOTE: accept UI subject/body in addition to overrideBody for backwards-compat
-    const {
-      logId,
-      overrideBody,
-      dryRun,
-      subject: uiSubject,
-      body: uiBody,
-    } = (await req.json()) as {
+    const { logId, overrideBody, dryRun, subject: uiSubject, body: uiBody } = (await req.json()) as {
       logId: string;
       overrideBody?: string;
       dryRun?: boolean;
@@ -154,19 +131,12 @@ export async function POST(req: Request) {
       body?: string;
     };
 
-    if (!logId) {
-      return NextResponse.json({ ok: false, error: "Missing logId" }, { status: 400 });
-    }
+    if (!logId) return NextResponse.json({ ok: false, error: "Missing logId" }, { status: 400 });
 
-    /* ──────────────────────────────────────────────
-       FETCH LOG + ORG VALIDATION
-    ─────────────────────────────────────────────── */
     const log = await prisma.emailAILog.findUnique({ where: { id: logId } });
-    if (!log) {
-      return NextResponse.json({ ok: false, error: "Log not found" }, { status: 404 });
-    }
+    if (!log) return NextResponse.json({ ok: false, error: "Log not found" }, { status: 404 });
 
-    // idempotency: if already sent, just echo success
+    // idempotency: already sent
     if (log.action === "auto_sent") {
       return NextResponse.json({ ok: true, delivered: true, gmailMsgId: log.gmailMsgId ?? null });
     }
@@ -175,25 +145,27 @@ export async function POST(req: Request) {
       where: { user: { email: session.user.email }, orgId: log.orgId },
       select: { orgId: true },
     });
-    if (!membership) {
-      return NextResponse.json({ ok: false, error: "No access to org" }, { status: 403 });
+    if (!membership) return NextResponse.json({ ok: false, error: "No access to org" }, { status: 403 });
+
+    const orgSettingsRow = await prisma.orgSettings.findUnique({
+      where: { orgId: log.orgId },
+      select: { data: true },
+    });
+
+    // ✅ FIX TS2451: don't redeclare `gmail`
+    const gmailIntegration = readGmailIntegration((orgSettingsRow?.data as Record<string, unknown>) || {});
+    if (!gmailIntegration.connected) {
+      return NextResponse.json({ ok: false, error: "Gmail disconnected" }, { status: 400 });
     }
 
-    const settings = await prisma.emailAISettings.findUnique({
-      where: { orgId: log.orgId },
-    });
-    if (!settings?.enabled) {
-      return NextResponse.json({ ok: false, error: "Email AI disabled" }, { status: 400 });
-    }
+    const settings = await prisma.emailAISettings.findUnique({ where: { orgId: log.orgId } });
+    if (!settings?.enabled) return NextResponse.json({ ok: false, error: "Email AI disabled" }, { status: 400 });
 
     const entitlements = await getOrgEntitlements(log.orgId);
     if (!entitlements.features.emailAi) {
       return NextResponse.json({ ok: false, error: "Email AI disabled for this org" }, { status: 403 });
     }
 
-    /* ──────────────────────────────────────────────
-       GMAIL AUTH (robust: JWT refresh if needed)
-    ─────────────────────────────────────────────── */
     const accessToken = await ensureGoogleAccessToken(req, session).catch((e) => {
       console.error("ensureGoogleAccessToken error:", e);
       return null;
@@ -208,7 +180,9 @@ export async function POST(req: Request) {
 
     const oauth2 = new google.auth.OAuth2();
     oauth2.setCredentials({ access_token: accessToken });
-    const gmail = google.gmail({ version: "v1", auth: oauth2 });
+
+    // ✅ FIX TS2339: strongly type the Gmail client so `.users.*` exists
+    const gmailClient: gmail_v1.Gmail = google.gmail({ version: "v1", auth: oauth2 });
 
     /* ──────────────────────────────────────────────
        FETCH THREAD CONTEXT
@@ -219,11 +193,12 @@ export async function POST(req: Request) {
     let subject = log.subject ? normalizeSubject(log.subject) : "Re: (no subject)";
 
     if (log.gmailThreadId) {
-      const thread = await gmail.users.threads.get({
+      const thread = await gmailClient.users.threads.get({
         userId: "me",
         id: log.gmailThreadId,
         format: "metadata",
       });
+
       const last = thread.data.messages?.slice(-1)[0];
       const headers = (last?.payload?.headers || []) as any[];
 
@@ -238,61 +213,56 @@ export async function POST(req: Request) {
       references = [prevRefs, originalMsgId].filter(Boolean).join(" ").trim();
     }
 
-    // fallback recipient (from log meta if we didn't get a thread)
     if (!toHeader) {
       const rm = (log.rawMeta as any) || {};
-      toHeader = (rm.replyTo || rm.from || "").trim();
+      toHeader = String(rm.replyTo || rm.from || "").trim();
     }
     if (!toHeader) {
       return NextResponse.json({ ok: false, error: "Could not determine recipient" }, { status: 400 });
     }
 
-/* ──────────────────────────────────────────────
-   COMPOSE SUBJECT & BODY  (REPLACED)
-────────────────────────────────────────────── */
-// pull suggestion saved on the log (if any)
-const suggested = ((log.rawMeta as any)?.suggested ?? {}) as {
-  subject?: string;
-  body?: string;
-};
+    /* ──────────────────────────────────────────────
+       COMPOSE SUBJECT & BODY
+    ─────────────────────────────────────────────── */
+    const suggested = ((log.rawMeta as any)?.suggested ?? {}) as { subject?: string; body?: string };
 
-// Subject precedence:
-// 1) uiSubject (from Review page)
-// 2) suggested.subject (from rawMeta)
-// 3) keep the normalized thread subject computed earlier
-if (uiSubject && uiSubject.trim()) {
-  subject = uiSubject.trim();
-} else if (suggested.subject && suggested.subject.trim()) {
-  subject = suggested.subject.trim();
-}
+    if (uiSubject && uiSubject.trim()) subject = uiSubject.trim();
+    else if (suggested.subject && suggested.subject.trim()) subject = suggested.subject.trim();
 
-// Body precedence (NO generic fallback):
-// 1) overrideBody
-// 2) uiBody (from Review page)
-// 3) suggested.body
-let body =
-  (overrideBody ?? uiBody ?? suggested.body ?? "").toString().trim();
+    let body = (overrideBody ?? uiBody ?? suggested.body ?? "").toString().trim();
 
-if (!body) {
-  // Stop and report instead of silently composing a generic response
-  return NextResponse.json(
-    { ok: false, error: "No body to send. Provide body (or suggested.body)." },
-    { status: 400 }
-  );
-}
+    if (!body) {
+      return NextResponse.json(
+        { ok: false, error: "No body to send. Provide body (or suggested.body)." },
+        { status: 400 }
+      );
+    }
+
+    const idemHeader = req.headers.get("Idempotency-Key")?.trim();
+    const idemKey =
+      idemHeader || `send:${log.gmailThreadId ?? log.gmailMsgId ?? log.id}:${hashSuggestion(subject, body)}`;
+
+    const prevMeta = (log.rawMeta as any) || {};
+    const prevIdem = (prevMeta.idempotency as Record<string, any>) || {};
+    if (!dryRun && prevIdem[idemKey]?.result?.gmailMsgId) {
+      return NextResponse.json({
+        ok: true,
+        delivered: true,
+        gmailMsgId: prevIdem[idemKey].result.gmailMsgId,
+        idempotent: true,
+      });
+    }
 
     if (settings.signature) {
       const sig = settings.signature.trim();
-      // avoid duplicate signature if already appended
-      if (!body.trim().endsWith(sig)) {
-        body = `${body}\n\n${sig}`;
-      }
+      if (sig && !body.trim().endsWith(sig)) body = `${body}\n\n${sig}`;
     }
 
     const identity = await resolveEmailIdentity(log.orgId, "");
+
     let senderEmail: string | null = null;
     try {
-      const profile = await gmail.users.getProfile({ userId: "me" });
+      const profile = await gmailClient.users.getProfile({ userId: "me" });
       senderEmail = profile.data.emailAddress ?? null;
     } catch {
       senderEmail = null;
@@ -327,37 +297,38 @@ if (!body) {
     }
 
     /* ──────────────────────────────────────────────
-       SEND WITH RETRY / FALLBACK
+       SEND WITH RETRY / BACKOFF
     ─────────────────────────────────────────────── */
-    let sendRes: any = null;
+    let sendRes: gmail_v1.Schema$Message | null = null;
     let attempt = 0;
     const maxAttempts = 3;
 
     while (attempt < maxAttempts) {
       try {
-        sendRes = await gmail.users.messages.send({
+        const res = await gmailClient.users.messages.send({
           userId: "me",
           requestBody: {
             raw: b64url(raw),
             threadId: log.gmailThreadId ?? undefined,
-          } as any,
+          },
         });
+
+        sendRes = (res.data || null) as gmail_v1.Schema$Message | null;
         break;
-      } catch (err: any) {
+      } catch (err: unknown) {
         attempt++;
-        const msg = err?.errors?.[0]?.message || err?.message;
+        const msg = err instanceof Error ? err.message : "Unknown Gmail send error";
         console.warn(`Gmail send attempt ${attempt} failed:`, msg);
         if (attempt >= maxAttempts) throw new Error(`Failed after ${attempt} retries: ${msg}`);
-        await sleep(1000 * attempt); // backoff
+        await sleep(1000 * attempt);
       }
     }
 
-    const sentId = sendRes?.data?.id ?? null;
+    const sentId = sendRes?.id ?? null;
 
     /* ──────────────────────────────────────────────
        UPDATE LOG / AUDIT
     ─────────────────────────────────────────────── */
-    const prevMeta = (log.rawMeta as any) || {};
     const audit = Array.isArray(prevMeta.audit) ? prevMeta.audit : [];
     audit.push({
       at: new Date().toISOString(),
@@ -365,6 +336,8 @@ if (!body) {
       action: "auto_sent",
       note: "Sent via /api/email-ai/send",
     });
+
+    const resultPayload = { ok: true, gmailMsgId: sentId, delivered: true };
 
     await prisma.emailAILog.update({
       where: { id: logId },
@@ -381,36 +354,30 @@ if (!body) {
           inReplyTo,
           references,
           modelUsed: "email-ai/send",
+          idempotency: {
+            ...prevIdem,
+            [idemKey]: { at: new Date().toISOString(), op: "send", result: resultPayload },
+          },
         } as any,
       },
     });
 
-    return NextResponse.json({
-      ok: true,
-      gmailMsgId: sentId,
-      delivered: true,
-    });
-  } catch (err: any) {
+    return NextResponse.json(resultPayload);
+  } catch (err: unknown) {
     console.error("SEND ROUTE ERROR:", err);
+    const message = err instanceof Error ? err.message : "Send failed";
     return NextResponse.json(
       {
         ok: false,
         delivered: false,
-        error: err?.message || "Send failed",
-        type:
-          err?.message?.includes("Invalid Credentials") ||
-          err?.message?.includes("401")
-            ? "auth"
-            : "server",
+        error: message,
+        type: message.includes("Invalid Credentials") || message.includes("401") ? "auth" : "server",
       },
       { status: 500 }
     );
   }
 }
 
-/* ──────────────────────────────────────────────
-   GET (INFO ENDPOINT)
-────────────────────────────────────────────── */
 export async function GET() {
   return NextResponse.json({
     ok: true,

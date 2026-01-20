@@ -5,6 +5,12 @@ import { prisma } from "@/lib/db";
 import { canAccessSuperAdminByEmail } from "@/lib/roles";
 import { resolvePlanConfig } from "@/lib/plan";
 import { getOrgEntitlements } from "@/lib/entitlements";
+import {
+  readCallsSettings,
+  readGmailIntegration,
+  readGoogleCalendarIntegration,
+  writeCallsSettings,
+} from "@/lib/orgSettings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -72,11 +78,9 @@ export async function GET(req: Request) {
 
   const data = (os?.data as Record<string, unknown>) || {};
   const planConfig = resolvePlanConfig(org?.plan ?? null, data);
-  const calendarId = typeof data.googleCalendarId === "string" ? data.googleCalendarId : null;
-  const accountEmail =
-    (typeof data.googleAccountEmail === "string" && data.googleAccountEmail) ||
-    connection?.accountEmail ||
-    null;
+  const google = readGoogleCalendarIntegration(data);
+  const calendarId = google.calendarId;
+  const accountEmail = google.accountEmail || connection?.accountEmail || null;
 
   const calendarSyncErrors = Array.isArray(data.calendarSyncErrors)
     ? data.calendarSyncErrors.slice(0, 10)
@@ -86,6 +90,8 @@ export async function GET(req: Request) {
   const emailAiSync = (data.emailAiSync as Record<string, unknown>) || {};
   const messagesSync = (data.messagesSync as Record<string, unknown>) || {};
   const retell = (data.retell as Record<string, unknown>) || {};
+  const calls = readCallsSettings(data);
+  const gmail = readGmailIntegration(data);
   const retellZapierWebhookUrl =
     typeof retell.zapierWebhookUrl === "string" ? retell.zapierWebhookUrl : null;
   const retellLastWebhookAt =
@@ -100,10 +106,28 @@ return json({
   entitlements,
   planNotes,
   google: {
-    connected: Boolean(calendarId && connection),
+    connected: Boolean(calendarId && connection && google.connected),
     calendarId,
     accountEmail,
     expiresAt: connection?.expiresAt ?? null,
+    lastSyncAt: google.lastSyncAt,
+    lastSyncError: google.lastSyncError,
+  },
+  gmail: {
+    connected: gmail.connected,
+    accountEmail: gmail.accountEmail,
+    lastError: gmail.lastError,
+  },
+  calls: {
+    retell: {
+      agentId: calls.retell.agentId ?? retellConn?.agentId ?? null,
+      phoneNumber: calls.retell.phoneNumber ?? null,
+      webhookUrl: calls.retell.webhookUrl ?? null,
+      webhookSecret: calls.retell.webhookSecret ?? retellConn?.webhookSecret ?? null,
+    },
+    bookingTools: {
+      enabled: calls.bookingTools.enabled,
+    },
   },
   cronLastRun: typeof data.cronLastRun === "string" ? data.cronLastRun : null,
   recentSyncErrors: calendarSyncErrors,
@@ -134,7 +158,9 @@ export async function POST(req: Request) {
       apiKeyEncrypted?: string | null;
       webhookSecret?: string;
       active?: boolean;
+      phoneNumber?: string;
     };
+    bookingToolsEnabled?: boolean;
     zapierWebhookUrl?: string | null;
   };
   const orgId = (body.orgId || "").trim();
@@ -145,6 +171,7 @@ export async function POST(req: Request) {
     const agentId = (body.retell.agentId || "").trim();
     const webhookSecret = (body.retell.webhookSecret || "").trim();
     const active = Boolean(body.retell.active);
+    const phoneNumber = (body.retell.phoneNumber || "").trim();
     const apiKeyEncrypted =
       typeof body.retell.apiKeyEncrypted === "string" ? body.retell.apiKeyEncrypted : undefined;
     if (agentId && webhookSecret) {
@@ -164,6 +191,42 @@ export async function POST(req: Request) {
         },
       });
     }
+    const settings = await prisma.orgSettings.findUnique({
+      where: { orgId },
+      select: { data: true },
+    });
+    const data = (settings?.data as Record<string, unknown>) || {};
+    const appUrl = (process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || "").replace(/\/$/, "");
+    const webhookUrl = appUrl ? `${appUrl}/api/webhooks/voice/retell/${orgId}` : null;
+    const next = writeCallsSettings(data, {
+      retell: {
+        agentId: agentId || null,
+        webhookSecret: webhookSecret || null,
+        phoneNumber: phoneNumber || null,
+        webhookUrl,
+      },
+    });
+    await prisma.orgSettings.upsert({
+      where: { orgId },
+      create: { orgId, data: next as any },
+      update: { data: next as any },
+    });
+  }
+
+  if (typeof body.bookingToolsEnabled === "boolean") {
+    const settings = await prisma.orgSettings.findUnique({
+      where: { orgId },
+      select: { data: true },
+    });
+    const data = (settings?.data as Record<string, unknown>) || {};
+    const next = writeCallsSettings(data, {
+      bookingTools: { enabled: body.bookingToolsEnabled },
+    });
+    await prisma.orgSettings.upsert({
+      where: { orgId },
+      create: { orgId, data: next as any },
+      update: { data: next as any },
+    });
   }
 
   if (zapierWebhookUrl || body.zapierWebhookUrl === null) {

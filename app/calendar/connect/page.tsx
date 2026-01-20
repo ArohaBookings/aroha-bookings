@@ -30,6 +30,8 @@ export default function CalendarConnectPage() {
   const [probe, setProbe] = useState<StatusProbe | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,7 +133,36 @@ export default function CalendarConnectPage() {
           >
             Back to calendar
           </Link>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={async () => {
+              if (!probe.orgId) return;
+              setBusy(true);
+              setNotice(null);
+              try {
+                const res = await fetch("/api/integrations/google/disconnect", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ orgId: probe.orgId, accountEmail: probe.email ?? null }),
+                });
+                const j = await res.json().catch(() => ({}));
+                if (!res.ok || !j?.ok) throw new Error(j?.error || "Disconnect failed");
+                setNotice("Disconnected.");
+                const p = await fetchStatus();
+                setProbe(p);
+              } catch (e: any) {
+                setNotice(e?.message || "Disconnect failed");
+              } finally {
+                setBusy(false);
+              }
+            }}
+            className="inline-flex items-center rounded-md border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-900 hover:bg-rose-100 disabled:opacity-60"
+          >
+            {busy ? "Disconnecting..." : "Disconnect Google"}
+          </button>
         </div>
+        {notice ? <div className="text-sm text-zinc-600">{notice}</div> : null}
       </div>
     );
   }

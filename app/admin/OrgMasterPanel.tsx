@@ -47,7 +47,26 @@ type OrgMasterResponse = {
       webchat: { enabled: boolean };
     };
   };
-  google?: { connected: boolean; calendarId: string | null; accountEmail: string | null; expiresAt: string | null };
+  google?: {
+    connected: boolean;
+    calendarId: string | null;
+    accountEmail: string | null;
+    expiresAt: string | null;
+    lastSyncAt?: string | null;
+    lastSyncError?: string | null;
+  };
+  gmail?: { connected: boolean; accountEmail: string | null; lastError?: string | null };
+  calls?: {
+    retell?: {
+      agentId: string | null;
+      phoneNumber: string | null;
+      webhookUrl: string | null;
+      webhookSecret: string | null;
+    };
+    bookingTools?: {
+      enabled: boolean;
+    };
+  };
   cronLastRun?: string | null;
   recentSyncErrors?: Array<Record<string, unknown>>;
   latestAppointment?: { id: string; status: string; startsAt: string; updatedAt: string } | null;
@@ -156,9 +175,11 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
   const [retellAgentId, setRetellAgentId] = React.useState("");
   const [retellApiKey, setRetellApiKey] = React.useState("");
   const [retellWebhookSecret, setRetellWebhookSecret] = React.useState("");
+  const [retellPhoneNumber, setRetellPhoneNumber] = React.useState("");
   const [retellActive, setRetellActive] = React.useState(true);
   const [retellZapierWebhookUrl, setRetellZapierWebhookUrl] = React.useState("");
   const [retellLastWebhookAt, setRetellLastWebhookAt] = React.useState<string | null>(null);
+  const [bookingToolsEnabled, setBookingToolsEnabled] = React.useState(false);
   const [diagnostics, setDiagnostics] = React.useState<DiagnosticsResponse["data"] | null>(null);
   const [diagnosticsTraceId, setDiagnosticsTraceId] = React.useState<string | null>(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = React.useState(false);
@@ -202,6 +223,10 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
   const appUrl = (process.env.NEXT_PUBLIC_APP_URL || "").trim();
   const bookingUrl = info?.org?.slug && appUrl ? `${appUrl.replace(/\/$/, "")}/book/${info.org.slug}` : "";
   const orgDashboardUrl = info?.org?.slug ? `/o/${info.org.slug}/dashboard?readonly=1` : "";
+  const voiceBase = info?.org?.id && appUrl ? `${appUrl.replace(/\/$/, "")}/api/integrations/voice/${info.org.id}` : "";
+  const availabilityEndpoint = voiceBase ? `${voiceBase}/availability` : "";
+  const createBookingEndpoint = voiceBase ? `${voiceBase}/create-booking` : "";
+  const webhookUrl = info?.org?.id && appUrl ? `${appUrl.replace(/\/$/, "")}/api/webhooks/voice/retell/${info.org.id}` : "";
 
   async function loadInfo(nextOrgId: string) {
     if (!nextOrgId) return;
@@ -238,9 +263,11 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
         setRetellAgentId(data.retell?.agentId || "");
         setRetellApiKey(data.retell?.apiKeyEncrypted || "");
         setRetellWebhookSecret(data.retell?.webhookSecret || "");
+        setRetellPhoneNumber(data.calls?.retell?.phoneNumber || "");
         setRetellActive(Boolean(data.retell?.active));
         setRetellZapierWebhookUrl(data.retell?.zapierWebhookUrl || "");
         setRetellLastWebhookAt(data.retell?.lastWebhookAt || null);
+        setBookingToolsEnabled(Boolean(data.calls?.bookingTools?.enabled));
         setLimits({
           bookingsPerMonth: data.planLimits?.bookingsPerMonth?.toString() || "",
           staffCount: data.planLimits?.staffCount?.toString() || "",
@@ -420,6 +447,7 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
             apiKeyEncrypted: retellApiKey,
             webhookSecret: retellWebhookSecret,
             active: retellActive,
+            phoneNumber: retellPhoneNumber,
           },
           zapierWebhookUrl: retellZapierWebhookUrl,
         }),
@@ -433,6 +461,32 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
       await loadInfo(orgId);
     } catch {
       safeSet(() => setStatus(renderScalar("Failed to update Retell settings.")));
+    }
+  }
+
+  async function saveBookingTools() {
+    if (!orgId) return;
+    safeSet(() => setStatus(null));
+    const controller = newActionController();
+    try {
+      const res = await fetch("/api/admin/org-master", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          orgId,
+          bookingToolsEnabled,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        safeSet(() => setStatus(renderScalar(data.error || "Failed to update booking tools.")));
+        return;
+      }
+      safeSet(() => setStatus(renderScalar("Booking tools updated.")));
+      await loadInfo(orgId);
+    } catch {
+      safeSet(() => setStatus(renderScalar("Failed to update booking tools.")));
     }
   }
 
@@ -467,6 +521,58 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
       safeSet(() => setStatus(renderScalar("Booking link copied.")));
     } catch {
       safeSet(() => setStatus(renderScalar("Unable to copy booking link.")));
+    }
+  }
+
+  async function copyText(value: string, label: string) {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      safeSet(() => setStatus(renderScalar(`${label} copied.`)));
+    } catch {
+      safeSet(() => setStatus(renderScalar(`Unable to copy ${label.toLowerCase()}.`)));
+    }
+  }
+
+  async function disconnectGoogle() {
+    if (!info?.org?.id || !info?.google?.connected) return;
+    safeSet(() => setStatus(renderScalar("Disconnecting Google...")));
+    try {
+      const res = await fetch("/api/integrations/google/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orgId: info.org.id, accountEmail: info.google?.accountEmail }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        safeSet(() => setStatus(renderScalar(data.error || "Failed to disconnect Google.")));
+        return;
+      }
+      await loadInfo(info.org.id);
+      safeSet(() => setStatus(renderScalar("Google disconnected.")));
+    } catch {
+      safeSet(() => setStatus(renderScalar("Failed to disconnect Google.")));
+    }
+  }
+
+  async function disconnectGmail() {
+    if (!info?.org?.id || !info?.gmail?.connected) return;
+    safeSet(() => setStatus(renderScalar("Disconnecting Gmail...")));
+    try {
+      const res = await fetch("/api/integrations/gmail/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orgId: info.org.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        safeSet(() => setStatus(renderScalar(data.error || "Failed to disconnect Gmail.")));
+        return;
+      }
+      await loadInfo(info.org.id);
+      safeSet(() => setStatus(renderScalar("Gmail disconnected.")));
+    } catch {
+      safeSet(() => setStatus(renderScalar("Failed to disconnect Gmail.")));
     }
   }
 
@@ -714,7 +820,7 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
         </div>
       </div>
 
-      <div className="mt-4 grid gap-4 md:grid-cols-3">
+      <div className="mt-4 grid gap-4 md:grid-cols-4">
         <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm">
           <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Org overview</div>
           <div className="mt-2 text-zinc-700">
@@ -745,13 +851,57 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
         </div>
         <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm">
           <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Google sync</div>
-          <div className="mt-2 text-zinc-700">
-            {loading ? "Loading..." : info?.google?.connected ? "Connected" : "Not connected"}
+          <div className="mt-2 flex items-center gap-2 text-zinc-700">
+            <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${statusPill(info?.google?.connected ?? null)}`}>
+              {loading ? "Loading..." : info?.google?.connected ? "Connected" : "Not connected"}
+            </span>
+            {info?.google?.lastSyncError ? (
+              <span className="text-[10px] text-rose-600">Needs attention</span>
+            ) : null}
           </div>
           <div className="text-xs text-zinc-500">{info?.google?.accountEmail || "No account"}</div>
           <div className="text-xs text-zinc-500">{info?.google?.calendarId || "No calendar"}</div>
           <div className="text-xs text-zinc-500">
             Expires: {info?.google?.expiresAt ? formatDateTime(info.google.expiresAt) : "—"}
+          </div>
+          <div className="text-xs text-zinc-500">
+            Last sync: {formatDateTime(info?.google?.lastSyncAt || null)}
+          </div>
+          {info?.google?.lastSyncError ? (
+            <div className="mt-2 text-[11px] text-rose-600">{info.google.lastSyncError}</div>
+          ) : null}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={disconnectGoogle}
+              disabled={!info?.google?.connected}
+              className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1 text-[11px] font-semibold text-rose-900 hover:bg-rose-100 disabled:opacity-50"
+            >
+              Disconnect Google
+            </button>
+          </div>
+        </div>
+        <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm">
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Gmail</div>
+          <div className="mt-2 flex items-center gap-2 text-zinc-700">
+            <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${statusPill(info?.gmail?.connected ?? null)}`}>
+              {loading ? "Loading..." : info?.gmail?.connected ? "Connected" : "Not connected"}
+            </span>
+            {info?.gmail?.lastError ? <span className="text-[10px] text-rose-600">Needs attention</span> : null}
+          </div>
+          <div className="text-xs text-zinc-500">{info?.gmail?.accountEmail || "No account"}</div>
+          {info?.gmail?.lastError ? (
+            <div className="mt-2 text-[11px] text-rose-600">{info.gmail.lastError}</div>
+          ) : null}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={disconnectGmail}
+              disabled={!info?.gmail?.connected}
+              className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1 text-[11px] font-semibold text-rose-900 hover:bg-rose-100 disabled:opacity-50"
+            >
+              Disconnect Gmail
+            </button>
           </div>
         </div>
         <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm">
@@ -800,6 +950,15 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
                 placeholder="whsec_..."
               />
             </label>
+            <label className="grid gap-1">
+              <span className="text-xs text-zinc-500">Phone number</span>
+              <input
+                value={retellPhoneNumber}
+                onChange={(e) => setRetellPhoneNumber(e.target.value)}
+                className="rounded-md border border-zinc-300 px-3 py-2 text-sm"
+                placeholder="+64..."
+              />
+            </label>
             <label className="flex items-center gap-2 text-xs text-zinc-600">
               <input
                 type="checkbox"
@@ -843,6 +1002,85 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
             >
               Save Zapier override
             </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <div className="rounded-lg border border-zinc-200 bg-white p-4">
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Voice booking tools</div>
+          <div className="mt-3 grid gap-3 text-sm">
+            <label className="flex items-center gap-2 text-xs text-zinc-600">
+              <input
+                type="checkbox"
+                checked={bookingToolsEnabled}
+                onChange={(e) => setBookingToolsEnabled(e.target.checked)}
+              />
+              Enabled
+            </label>
+            <div>
+              <div className="text-xs text-zinc-500">Availability endpoint</div>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <span className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 text-[11px] text-zinc-700">
+                  {availabilityEndpoint || "Configure NEXT_PUBLIC_APP_URL"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => copyText(availabilityEndpoint, "Availability endpoint")}
+                  disabled={!availabilityEndpoint}
+                  className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-zinc-500">Create booking endpoint</div>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <span className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 text-[11px] text-zinc-700">
+                  {createBookingEndpoint || "Configure NEXT_PUBLIC_APP_URL"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => copyText(createBookingEndpoint, "Create booking endpoint")}
+                  disabled={!createBookingEndpoint}
+                  className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-zinc-500">Webhook URL</div>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <span className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 text-[11px] text-zinc-700">
+                  {webhookUrl || "Configure NEXT_PUBLIC_APP_URL"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => copyText(webhookUrl, "Webhook URL")}
+                  disabled={!webhookUrl}
+                  className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={saveBookingTools}
+              className="rounded-md border border-zinc-300 px-3 py-2 text-xs text-zinc-700 hover:bg-zinc-100"
+            >
+              Save booking tools
+            </button>
+          </div>
+        </div>
+        <div className="rounded-lg border border-zinc-200 bg-white p-4">
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Call settings</div>
+          <div className="mt-3 grid gap-3 text-sm">
+            <div className="text-xs text-zinc-500">Retell agent ID: {info?.calls?.retell?.agentId || "—"}</div>
+            <div className="text-xs text-zinc-500">Retell webhook secret: {info?.calls?.retell?.webhookSecret || "—"}</div>
+            <div className="text-xs text-zinc-500">Retell phone number: {info?.calls?.retell?.phoneNumber || "—"}</div>
           </div>
         </div>
       </div>

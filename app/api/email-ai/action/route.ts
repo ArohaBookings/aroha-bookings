@@ -5,6 +5,8 @@ import { prisma } from "@/lib/db";
 import { auth } from "@/lib/auth";
 import { getToken } from "next-auth/jwt";
 import { google } from "googleapis";
+import { createHash } from "crypto";
+import { readGmailIntegration } from "@/lib/orgSettings";
 
 // Reuse your real SEND handler (approve/send + dryRun composition)
 import { POST as sendPOST } from "@/app/api/email-ai/send/route";
@@ -190,6 +192,16 @@ function mergeSubjectBody(
   return { subject, body };
 }
 
+function hashSuggestion(subject: string, body: string) {
+  return createHash("sha256").update(`${subject}\n${body}`).digest("hex").slice(0, 24);
+}
+
+function buildIdempotencyKey(op: Op, threadId: string | null, subject: string, body: string) {
+  const base = threadId || "no-thread";
+  const hash = hashSuggestion(subject, body);
+  return `${op}:${base}:${hash}`;
+}
+
 /* ────────────────────────────────────────────────────────────
    Route: POST
 ────────────────────────────────────────────────────────────── */
@@ -223,6 +235,15 @@ export async function POST(req: Request) {
       }
     }
 
+    const orgSettings = await prisma.orgSettings.findUnique({
+      where: { orgId: log.orgId },
+      select: { data: true },
+    });
+    const gmail = readGmailIntegration((orgSettings?.data as Record<string, unknown>) || {});
+    if (!gmail.connected) {
+      return NextResponse.json({ ok: false, error: "Gmail disconnected" }, { status: 400 });
+    }
+
     const ORIGIN = resolveOrigin(req);
     const SEND_URL = `${ORIGIN}/api/email-ai/send`;
 
@@ -233,6 +254,9 @@ export async function POST(req: Request) {
         subject: log.subject,
         rawMeta: log.rawMeta,
       });
+      const idemHeader = req.headers.get("Idempotency-Key")?.trim();
+      const idempotencyKey =
+        idemHeader || buildIdempotencyKey(payload.op, log.gmailThreadId ?? log.gmailMsgId ?? log.id, subject, body);
 
       if (!body) {
         return NextResponse.json(
@@ -244,7 +268,11 @@ export async function POST(req: Request) {
       // Call the real /send handler in-process (no cookie forwarding needed)
       const sendReq = new Request(SEND_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
         body: JSON.stringify({
           logId: payload.id,
           subject,
@@ -280,12 +308,34 @@ export async function POST(req: Request) {
         subject: log.subject,
         rawMeta: log.rawMeta,
       });
+      const idemHeader = req.headers.get("Idempotency-Key")?.trim();
+      const idempotencyKey =
+        idemHeader || buildIdempotencyKey(payload.op, log.gmailThreadId ?? log.gmailMsgId ?? log.id, subject, body);
 
       if (!body) {
         return NextResponse.json(
           { ok: false, error: "No suggested reply available for this item." },
           { status: 400 }
         );
+      }
+
+      const prevMeta = (log.rawMeta as any) || {};
+      const prevIdem = (prevMeta.idempotency as Record<string, any>) || {};
+      if (prevIdem[idempotencyKey]?.result) {
+        return NextResponse.json({ ok: true, ...prevIdem[idempotencyKey].result, idempotent: true });
+      }
+      if (prevMeta.draftId) {
+        return NextResponse.json({
+          ok: true,
+          id: log.id,
+          action: "draft_created",
+          gmailDraftId: prevMeta.draftId,
+          gmailMsgId: log.gmailMsgId ?? null,
+          editUrl: prevMeta.draftId
+            ? `https://mail.google.com/mail/u/0/#drafts?compose=${encodeURIComponent(prevMeta.draftId)}`
+            : null,
+          idempotent: true,
+        });
       }
 
       // Compose exactly what /send would send, but as a dryRun
@@ -325,7 +375,6 @@ export async function POST(req: Request) {
       );
 
       // Update DB to reflect a draft exists
-      const prevMeta = (log.rawMeta as any) || {};
       const audit = Array.isArray(prevMeta.audit) ? prevMeta.audit : [];
       audit.push({
         at: new Date().toISOString(),
@@ -333,6 +382,17 @@ export async function POST(req: Request) {
         action: "draft_created",
         note: "Created via /api/email-ai/action save_draft",
       });
+
+      const resultPayload = {
+        ok: true,
+        id: log.id,
+        action: "draft_created",
+        gmailDraftId: draftId,
+        gmailMsgId: msgId ?? null,
+        editUrl: draftId
+          ? `https://mail.google.com/mail/u/0/#drafts?compose=${encodeURIComponent(draftId)}`
+          : null,
+      };
 
       await prisma.emailAILog.update({
         where: { id: log.id },
@@ -349,20 +409,15 @@ export async function POST(req: Request) {
               subject,
               body,
             },
+            idempotency: {
+              ...prevIdem,
+              [idempotencyKey]: { at: new Date().toISOString(), op: "save_draft", result: resultPayload },
+            },
           } as any,
         },
       });
 
-      return NextResponse.json({
-        ok: true,
-        id: log.id,
-        action: "draft_created",
-        gmailDraftId: draftId,
-        gmailMsgId: msgId ?? null,
-        editUrl: draftId
-          ? `https://mail.google.com/mail/u/0/#drafts?compose=${encodeURIComponent(draftId)}`
-          : null,
-      });
+      return NextResponse.json(resultPayload);
     }
 
     /* -------------------- SKIP -------------------- */

@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { requireSessionOrgFeature } from "@/lib/entitlements";
+import { readGmailIntegration } from "@/lib/orgSettings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -73,6 +74,8 @@ export async function GET(req: Request) {
     });
 
     const data = (orgSettings?.data as Record<string, unknown>) || {};
+    const gmail = readGmailIntegration(data);
+    const gmailConnected = gmail.connected;
     const inboxSettings = resolveInboxSettings(data);
     const syncState = resolveSyncState(data);
 
@@ -110,14 +113,14 @@ export async function GET(req: Request) {
       receivedAt: r.receivedAt
         ? (r.receivedAt instanceof Date ? r.receivedAt : new Date(r.receivedAt)).toISOString()
         : null,
-      subject: r.subject ?? null,
-      snippet: r.snippet ?? null,
-      gmailThreadId: r.gmailThreadId ?? null,
-      gmailMsgId: r.gmailMsgId ?? null,
+      subject: gmailConnected ? (r.subject ?? null) : null,
+      snippet: gmailConnected ? (r.snippet ?? null) : null,
+      gmailThreadId: gmailConnected ? (r.gmailThreadId ?? null) : null,
+      gmailMsgId: gmailConnected ? (r.gmailMsgId ?? null) : null,
       action: r.action ?? null,
       confidence: typeof r.confidence === "number" ? r.confidence : null,
       classification: r.classification ?? null,
-      rawMeta: r.rawMeta ?? null,
+      rawMeta: gmailConnected ? (r.rawMeta ?? null) : null,
     }));
 
     return NextResponse.json({
@@ -125,6 +128,7 @@ export async function GET(req: Request) {
       items,
       inboxSettings,
       syncState,
+      gmailConnected,
       ts: Date.now(),
     });
   } catch (err: any) {

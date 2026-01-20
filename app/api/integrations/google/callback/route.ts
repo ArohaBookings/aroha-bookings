@@ -5,6 +5,7 @@ import { google } from "googleapis";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { writeGoogleCalendarIntegration } from "@/lib/orgSettings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -123,15 +124,17 @@ export async function GET(req: Request) {
     create: { orgId: payload.orgId, data: {} },
     update: {},
   });
-const data = {
-  ...(os.data as Record<string, unknown>),
-  googleAccountEmail: accountEmail,
-};
+  const data = { ...(os.data as Record<string, unknown>) };
+  const next = writeGoogleCalendarIntegration(data, {
+    connected: true,
+    accountEmail,
+    syncEnabled: true,
+  });
 
-await prisma.orgSettings.update({
-  where: { orgId: payload.orgId },
-  data: { data: data as any },
-});
+  await prisma.orgSettings.update({
+    where: { orgId: payload.orgId },
+    data: { data: next as any },
+  });
 
 
   const res = NextResponse.redirect(`/settings?google=connected`);

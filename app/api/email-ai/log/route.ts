@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { auth } from "@/lib/auth";
+import { readGmailIntegration } from "@/lib/orgSettings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -98,6 +99,14 @@ export async function GET(req: Request) {
 
     const actions = actionsForTab(tab);
 
+    const settingsRow = await prisma.orgSettings.findUnique({
+      where: { orgId },
+      select: { data: true },
+    });
+    const settingsData = (settingsRow?.data as Record<string, unknown>) || {};
+    const gmail = readGmailIntegration(settingsData);
+    const gmailConnected = gmail.connected;
+
     // --- build where clause safely ---
     const where: any = {
       orgId,
@@ -151,20 +160,23 @@ export async function GET(req: Request) {
     // derive lightweight flags and strip rawMeta
     const rows = rawRows.map((r) => {
       const rm = (r as any).rawMeta || {};
-      const hasDraft = Boolean(rm.draftId);
-      const hasSuggested = Boolean(rm.suggested && (rm.suggested.subject || rm.suggested.body));
+      const hasDraft = gmailConnected ? Boolean(rm.draftId) : false;
+      const hasSuggested = gmailConnected
+        ? Boolean(rm.suggested && (rm.suggested.subject || rm.suggested.body))
+        : false;
       return {
         id: r.id,
         createdAt: r.createdAt,
-        subject: r.subject,
-        snippet: r.snippet,
+        subject: gmailConnected ? r.subject : null,
+        snippet: gmailConnected ? r.snippet : null,
         action: r.action,
         classification: r.classification,
         confidence: r.confidence,
-        gmailThreadId: r.gmailThreadId,
-        gmailMsgId: r.gmailMsgId,
+        gmailThreadId: gmailConnected ? r.gmailThreadId : null,
+        gmailMsgId: gmailConnected ? r.gmailMsgId : null,
         hasDraft,
         hasSuggested,
+        gmailConnected,
       };
     });
 

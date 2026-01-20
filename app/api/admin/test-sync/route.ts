@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { canAccessSuperAdminByEmail } from "@/lib/roles";
+import { readGoogleCalendarIntegration } from "@/lib/orgSettings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -56,10 +57,10 @@ export async function GET(req: Request) {
   if (!appt) return json({ ok: false, error: "No appointments found" }, 404);
 
   const data = (settings?.data as Record<string, unknown>) || {};
-  const calendarId = typeof data.googleCalendarId === "string" ? data.googleCalendarId : null;
-  const accountEmail =
-    (typeof data.googleAccountEmail === "string" && data.googleAccountEmail) || connection?.accountEmail || null;
-  const googleConnected = Boolean(calendarId && connection);
+  const google = readGoogleCalendarIntegration(data);
+  const calendarId = google.calendarId;
+  const accountEmail = google.accountEmail || connection?.accountEmail || null;
+  const googleConnected = Boolean(calendarId && connection && google.connected);
   const expired = connection?.expiresAt ? connection.expiresAt.getTime() <= Date.now() : true;
   const needsReconnect = !googleConnected || expired;
 

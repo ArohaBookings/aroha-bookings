@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { canAccessSuperAdminByEmail } from "@/lib/roles";
+import { readGoogleCalendarIntegration } from "@/lib/orgSettings";
 import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
@@ -82,12 +83,12 @@ export async function GET(req: Request) {
   const lastSyncEndpointTried =
     typeof callsMeta.lastSyncEndpointTried === "string" ? callsMeta.lastSyncEndpointTried : null;
 
-  const calendarId = typeof data.googleCalendarId === "string" ? data.googleCalendarId : null;
-  const calendarLastSyncAt = typeof data.calendarLastSyncAt === "string" ? data.calendarLastSyncAt : null;
+  const google = readGoogleCalendarIntegration(data);
+  const calendarId = google.calendarId;
+  const calendarLastSyncAt = google.lastSyncAt;
   const calendarSyncErrors = Array.isArray(data.calendarSyncErrors) ? data.calendarSyncErrors : [];
   const lastGoogleError = calendarSyncErrors.length ? JSON.stringify(calendarSyncErrors[0]) : null;
-  const accountEmail =
-    (typeof data.googleAccountEmail === "string" && data.googleAccountEmail) || googleConn?.accountEmail || null;
+  const accountEmail = google.accountEmail || googleConn?.accountEmail || null;
 
   const hasConnection = Boolean(retellConn);
   const agentIdPresent = Boolean(retellConn?.agentId);
@@ -95,7 +96,7 @@ export async function GET(req: Request) {
   const canDecrypt = Boolean(retellConn?.apiKeyEncrypted);
   const retellOk = hasConnection && agentIdPresent && apiKeyPresent && retellConn?.active !== false;
 
-  const googleConnected = Boolean(calendarId && googleConn);
+  const googleConnected = Boolean(calendarId && googleConn && google.connected);
   const googleExpired = googleConn?.expiresAt ? googleConn.expiresAt.getTime() <= now.getTime() : true;
   const needsReconnect = !googleConnected || googleExpired;
   const googleOk = googleConnected && !needsReconnect;

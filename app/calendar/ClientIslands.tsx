@@ -46,6 +46,7 @@ export type Block = {
   _syncedAt?: string | null;
   _syncErrorMessage?: string | null;
   _syncErrorAt?: string | null;
+  _originTag?: "Aroha booking" | "Google busy block" | "Manual";
 };
 
 export type ViewMode = "week" | "day";
@@ -711,6 +712,11 @@ function BookingBlock({ block, slotMin }: { block: Block; slotMin: number }) {
     >
       <div className="font-medium truncate">{(block as any)._customerName ?? block.title}</div>
       <div className="text-[11px] opacity-80 truncate">{block.subtitle}</div>
+      {block._originTag ? (
+        <div className="mt-1 inline-flex items-center rounded-full border border-zinc-200 bg-white/70 px-2 py-[1px] text-[10px] uppercase tracking-wide text-zinc-600">
+          {block._originTag}
+        </div>
+      ) : null}
 
       {/* resize handles */}
       <div
@@ -1413,6 +1419,11 @@ function EditForm({
           <div className="flex items-center justify-between">
             <span className="font-semibold text-zinc-700">Sync status</span>
             <div className="flex items-center gap-2">
+              {data.syncProvider === "google" ? (
+                <Badge variant="success">Synced to Google</Badge>
+              ) : (
+                <Badge variant="neutral">Not synced</Badge>
+              )}
               <Button
                 variant="secondary"
                 type="button"
@@ -1483,7 +1494,7 @@ function EditForm({
             </div>
             {data.syncErrorMessage ? (
               <div className="text-red-600">
-                Error: {data.syncErrorMessage}
+                Google sync failed — reconnect. Error: {data.syncErrorMessage}
                 {data.syncErrorAt ? ` (${new Date(data.syncErrorAt).toLocaleString()})` : ""}
               </div>
             ) : null}

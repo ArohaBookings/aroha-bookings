@@ -4,7 +4,9 @@ import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { readGoogleCalendarIntegration } from "@/lib/orgSettings";
 import GoogleIntegrationsClient from "./GoogleIntegrationsClient";
+import GoogleConnectionActions from "./GoogleConnectionActions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,8 +36,10 @@ export default async function GoogleIntegrationsPage() {
   ]);
 
   const data = (settings?.data as Record<string, unknown>) || {};
-  const calendarId = (data.googleCalendarId as string) || null;
-  const accountEmail = (data.googleAccountEmail as string) || connection?.accountEmail || null;
+  const google = readGoogleCalendarIntegration(data);
+  const calendarId = google.calendarId || null;
+  const accountEmail = google.accountEmail || connection?.accountEmail || null;
+  const isConnected = Boolean(google.connected && calendarId && connection);
   const errorsRaw = Array.isArray(data.calendarSyncErrors) ? data.calendarSyncErrors : [];
 
   const errors = errorsRaw
@@ -60,7 +64,7 @@ export default async function GoogleIntegrationsPage() {
           <div className="mt-4 grid gap-4 md:grid-cols-2 text-sm text-zinc-700">
             <div>
               <p className="text-xs text-zinc-500">Connection</p>
-              <p className="font-medium">{connection ? "Connected" : "Not connected"}</p>
+              <p className="font-medium">{isConnected ? "Connected" : "Not connected"}</p>
               <p className="text-xs text-zinc-500 mt-1">{accountEmail || "No account email"}</p>
             </div>
             <div>
@@ -70,6 +74,9 @@ export default async function GoogleIntegrationsPage() {
                 {connection?.expiresAt ? `Token expires ${new Date(connection.expiresAt).toLocaleString()}` : "—"}
               </p>
             </div>
+          </div>
+          <div className="mt-4">
+            <GoogleConnectionActions orgId={membership.org.id} connected={isConnected} accountEmail={accountEmail} />
           </div>
         </section>
 

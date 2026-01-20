@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { readGoogleCalendarIntegration } from "@/lib/orgSettings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,8 +37,9 @@ export async function GET() {
   ]);
 
   const data = (orgSettings?.data as Record<string, unknown>) || {};
-  const calendarId = typeof data.googleCalendarId === "string" ? data.googleCalendarId : null;
-  const lastSyncAt = typeof data.calendarLastSyncAt === "string" ? data.calendarLastSyncAt : null;
+  const google = readGoogleCalendarIntegration(data);
+  const calendarId = google.calendarId;
+  const lastSyncAt = google.lastSyncAt;
   const errors = Array.isArray(data.calendarSyncErrors) ? data.calendarSyncErrors : [];
   const lastError = errors.length ? errors[0] : null;
   const expiresAt = connection?.expiresAt ? connection.expiresAt.getTime() : null;
@@ -46,7 +48,7 @@ export async function GET() {
   return NextResponse.json({
     ok: true,
     orgId: membership.orgId,
-    connected: Boolean(connection),
+    connected: Boolean(connection) && google.connected,
     email: connection?.accountEmail ?? null,
     expiresAt,
     needsReconnect,
