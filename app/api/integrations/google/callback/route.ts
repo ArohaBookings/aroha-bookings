@@ -6,20 +6,12 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { writeGoogleCalendarIntegration } from "@/lib/orgSettings";
+import { getGoogleOAuthClient } from "@/lib/google/connect";
+import { resolveOrigin } from "@/lib/http/origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
-
-function getOAuthClient() {
-  const clientId = process.env.GOOGLE_CLIENT_ID || "";
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
-  const redirectUrl = process.env.GOOGLE_REDIRECT_URL || "";
-  if (!clientId || !clientSecret || !redirectUrl) {
-    throw new Error("Google OAuth env vars missing");
-  }
-  return new google.auth.OAuth2(clientId, clientSecret, redirectUrl);
-}
 
 function decodeState(state: string | null) {
   if (!state) return null;
@@ -41,6 +33,13 @@ function isSuperadmin(email?: string | null): boolean {
 }
 
 export async function GET(req: Request) {
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+    return NextResponse.json(
+      { ok: false, error: "Google OAuth not configured (missing GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET)." },
+      { status: 500 }
+    );
+  }
+
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
@@ -74,7 +73,16 @@ export async function GET(req: Request) {
     }
   }
 
-  const oauth2 = getOAuthClient();
+  const origin = resolveOrigin(req);
+  if (!origin) {
+    return NextResponse.json(
+      { ok: false, error: "Google OAuth origin could not be resolved (check NEXT_PUBLIC_APP_URL or NEXTAUTH_URL)." },
+      { status: 500 }
+    );
+  }
+
+  const redirectUrl = `${origin}/api/integrations/google/callback`;
+  const oauth2 = getGoogleOAuthClient(redirectUrl);
   const { tokens } = await oauth2.getToken(code);
   if (!tokens.access_token) {
     return NextResponse.json({ ok: false, error: "Missing access token" }, { status: 400 });

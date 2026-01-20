@@ -538,7 +538,7 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
     if (!info?.org?.id || !info?.google?.connected) return;
     safeSet(() => setStatus(renderScalar("Disconnecting Google...")));
     try {
-      const res = await fetch("/api/integrations/google/disconnect", {
+      const res = await fetch("/api/org/integrations/google-calendar/disconnect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ orgId: info.org.id, accountEmail: info.google?.accountEmail }),
@@ -559,7 +559,7 @@ export default function OrgMasterPanel({ orgs }: { orgs: OrgLite[] }) {
     if (!info?.org?.id || !info?.gmail?.connected) return;
     safeSet(() => setStatus(renderScalar("Disconnecting Gmail...")));
     try {
-      const res = await fetch("/api/integrations/gmail/disconnect", {
+      const res = await fetch("/api/org/integrations/gmail/disconnect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ orgId: info.org.id }),

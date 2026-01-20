@@ -5,6 +5,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { buildGoogleAuthUrl } from "@/lib/integrations/google/calendar";
 import { randomBytes } from "crypto";
+import { resolveOrigin } from "@/lib/http/origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,6 +21,13 @@ function isSuperadmin(email?: string | null): boolean {
 }
 
 export async function GET(req: Request) {
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+    return NextResponse.json(
+      { ok: false, error: "Google OAuth not configured (missing GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET)." },
+      { status: 500 }
+    );
+  }
+
   const session = await getServerSession(authOptions);
   const email = session?.user?.email || null;
   if (!email) {
@@ -47,7 +55,20 @@ export async function GET(req: Request) {
   const statePayload = JSON.stringify({ orgId, nonce, ts: Date.now() });
   const state = Buffer.from(statePayload).toString("base64url");
 
-  const authUrl = buildGoogleAuthUrl(state);
+  const origin = resolveOrigin(req);
+  if (!origin) {
+    return NextResponse.json(
+      { ok: false, error: "Google OAuth origin could not be resolved (check NEXT_PUBLIC_APP_URL or NEXTAUTH_URL)." },
+      { status: 500 }
+    );
+  }
+
+  const redirectUrl = `${origin}/api/integrations/google/callback`;
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[google-oauth] origin:", origin, "redirect_uri:", redirectUrl);
+  }
+
+  const authUrl = buildGoogleAuthUrl(state, redirectUrl);
   const res = NextResponse.redirect(authUrl);
   res.cookies.set("gcal_oauth_state", state, {
     httpOnly: true,

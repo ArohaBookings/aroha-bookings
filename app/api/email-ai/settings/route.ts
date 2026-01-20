@@ -6,7 +6,7 @@ import { authOptions } from "@/lib/auth";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
 import { requireSessionOrgFeature } from "@/lib/entitlements";
-import { readGmailIntegration, writeGmailIntegration } from "@/lib/orgSettings";
+import { readGmailIntegration } from "@/lib/orgSettings";
 
 // ─────────────────────────────────────────────
 // Environment / Route config
@@ -53,28 +53,14 @@ async function getAuthedContext() {
     return { error: gate.error || "Not authorized", status: gate.status };
   }
 
-  const session = await getServerSession(authOptions);
-  const googleConnected = Boolean((session as any)?.google?.access_token);
+  await getServerSession(authOptions);
   const orgSettings = await prisma.orgSettings.findUnique({
     where: { orgId: gate.orgId },
     select: { data: true },
   });
   const data = (orgSettings?.data as Record<string, unknown>) || {};
-  let gmailConnected = readGmailIntegration(data).connected;
-  if (googleConnected) {
-    const next = writeGmailIntegration(data, {
-      connected: true,
-      accountEmail: session?.user?.email ?? null,
-      lastError: null,
-    });
-    await prisma.orgSettings.upsert({
-      where: { orgId: gate.orgId },
-      create: { orgId: gate.orgId, data: next as any },
-      update: { data: next as any },
-    });
-    gmailConnected = true;
-  }
-  return { orgId: gate.orgId, googleConnected, gmailConnected };
+  const gmailConnected = readGmailIntegration(data).connected;
+  return { orgId: gate.orgId, googleConnected: gmailConnected, gmailConnected };
 }
 
 // ─────────────────────────────────────────────
@@ -219,7 +205,7 @@ export async function POST(req: Request) {
   }
   const data = parsed.data;
 
-  if (data.enabled === true && !ctx.googleConnected) {
+  if (data.enabled === true && !ctx.gmailConnected) {
     return json(
       { ok: false, error: "Connect Gmail before enabling Email AI" },
       400

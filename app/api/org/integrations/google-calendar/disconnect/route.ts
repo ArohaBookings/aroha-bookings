@@ -2,8 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { getToken } from "next-auth/jwt";
-import { disconnectGmail } from "@/lib/integrations/gmail/disconnect";
+import { disconnectGoogleCalendar } from "@/lib/integrations/google/disconnect";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,17 +17,14 @@ function isSuperadmin(email?: string | null): boolean {
   return list.includes(email.trim().toLowerCase());
 }
 
-async function revokeGoogleToken(token: string) {
-  try {
-    const body = new URLSearchParams({ token });
-    await fetch("https://oauth2.googleapis.com/revoke", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body,
-    });
-  } catch {
-    // best-effort only
-  }
+async function resolveOrgId(email: string, inputOrgId?: string) {
+  if (inputOrgId) return inputOrgId;
+  const membership = await prisma.membership.findFirst({
+    where: { user: { email } },
+    select: { orgId: true },
+    orderBy: { orgId: "asc" },
+  });
+  return membership?.orgId ?? null;
 }
 
 export async function POST(req: Request) {
@@ -38,8 +34,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Not authenticated" }, { status: 401 });
   }
 
-  const body = (await req.json().catch(() => ({}))) as { orgId?: string };
-  const orgId = (body.orgId || "").trim();
+  const body = (await req.json().catch(() => ({}))) as { orgId?: string; accountEmail?: string };
+  const orgId = await resolveOrgId(email, (body.orgId || "").trim() || undefined);
+  const accountEmail = (body.accountEmail || "").trim();
+
   if (!orgId) {
     return NextResponse.json({ ok: false, error: "Missing orgId" }, { status: 400 });
   }
@@ -55,13 +53,6 @@ export async function POST(req: Request) {
     }
   }
 
-  const accessToken = (session as any)?.google?.access_token as string | undefined;
-  const jwt = await getToken({ req: req as any, raw: false, secureCookie: false });
-  const refreshToken = (jwt as any)?.google_refresh_token as string | undefined;
-  if (refreshToken) await revokeGoogleToken(refreshToken);
-  else if (accessToken) await revokeGoogleToken(accessToken);
-
-  await disconnectGmail(orgId);
-
+  await disconnectGoogleCalendar({ orgId, accountEmail: accountEmail || null });
   return NextResponse.json({ ok: true });
 }

@@ -31,6 +31,16 @@ async function revokeGoogleToken(token: string) {
   }
 }
 
+async function resolveOrgId(email: string, inputOrgId?: string) {
+  if (inputOrgId) return inputOrgId;
+  const membership = await prisma.membership.findFirst({
+    where: { user: { email } },
+    select: { orgId: true },
+    orderBy: { orgId: "asc" },
+  });
+  return membership?.orgId ?? null;
+}
+
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email || null;
@@ -39,7 +49,7 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json().catch(() => ({}))) as { orgId?: string };
-  const orgId = (body.orgId || "").trim();
+  const orgId = await resolveOrgId(email, (body.orgId || "").trim() || undefined);
   if (!orgId) {
     return NextResponse.json({ ok: false, error: "Missing orgId" }, { status: 400 });
   }
@@ -62,6 +72,5 @@ export async function POST(req: Request) {
   else if (accessToken) await revokeGoogleToken(accessToken);
 
   await disconnectGmail(orgId);
-
   return NextResponse.json({ ok: true });
 }

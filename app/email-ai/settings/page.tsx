@@ -419,6 +419,7 @@ export default function EmailAISettingsPage() {
       setError(null);
       setInboxError(null);
       try {
+        await fetch("/api/email-ai/token", { cache: "no-store" }).catch(() => {});
         const res = await fetch("/api/email-ai/settings", { cache: "no-store" });
         const j = await res.json();
         if (!res.ok || !j?.ok) throw new Error(j?.error || `Load failed (${res.status})`);
@@ -915,7 +916,7 @@ Include signature if set. Do not invent facts.`;
             disabled={!gmailConnected || !orgId}
             onClick={async () => {
               if (!orgId) return;
-              const res = await fetch("/api/integrations/gmail/disconnect", {
+              const res = await fetch("/api/org/integrations/gmail/disconnect", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ orgId }),

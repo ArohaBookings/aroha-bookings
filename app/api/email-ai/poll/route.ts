@@ -7,8 +7,8 @@ import { getOrgEntitlements } from "@/lib/entitlements";
 import { auth } from "@/lib/auth";
 import { getToken } from "next-auth/jwt";
 import { google, gmail_v1 } from "googleapis";
-import OpenAI from "openai";
 import { readGmailIntegration } from "@/lib/orgSettings";
+import { generateEmailReply, hasOpenAI } from "@/lib/ai/openai";
 
 /* ──────────────────────────────────────────────
    Runtime / cache
@@ -26,17 +26,11 @@ const MAX_ITEMS_PER_RUN = 40;
 const DEFAULT_LOOKBACK_DAYS = 14;
 const BACKFILL_LOOKBACK_DAYS = 90;
 
-const OPENAI_MODEL = "gpt-4o-mini";
 const AI_TIMEOUT_MS = 12_000;
 const GMAIL_TIMEOUT_MS = 15_000;
 const OPENAI_CONCURRENCY = 4;
 
 const MIN_SNIPPET_CHARS = 6; // super low: we still log nearly everything
-
-/* ──────────────────────────────────────────────
-   Optional OpenAI
-────────────────────────────────────────────── */
-const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
 /* ──────────────────────────────────────────────
    Helpers
@@ -222,65 +216,8 @@ function classifyDeterministic(subject: string, snippet: string): Classification
   return { category, priority, risk, confidence, reasons: reasons.slice(0, 3) };
 }
 
-async function generateReplyBody(opts: {
-  businessName: string;
-  defaultTone: string;
-  instructionPrompt?: string | null;
-  signature?: string | null;
-  subject: string;
-  preview: string;
-  label: string;
-  snippets?: Snippet[];
-}) {
-  const { businessName, defaultTone, instructionPrompt, signature, subject, preview, label, snippets } = opts;
-
-  if (!openai) {
-    const base = `Kia ora,\n\nThanks for reaching out about “${subject}”. We’ll come back to you shortly.\n`;
-    return signature ? `${base}\n${signature}` : base;
-  }
-
-  const snippetBlock = snippets?.length
-    ? `Approved snippets (use verbatim if relevant):\n${snippets.map((s) => `- ${s.title}: ${s.body}`).join("\n")}`
-    : "";
-
-  const system = `
-You are the email assistant for ${businessName}.
-Tone: ${defaultTone}. Use NZ English.
-Owner instructions (follow strictly):
-${instructionPrompt || "(none)"}
-
-Rules:
-- Use approved snippets when relevant; do NOT invent policy text.
-${snippetBlock ? `\n${snippetBlock}\n` : ""}
-- Be concise (80–140 words).
-- Never invent prices/times/promises.
-- If unsure: say a human will follow up.
-Return BODY ONLY (no email headers).
-`.trim();
-
-  const user = `
-Email:
-Subject: ${subject}
-Preview: ${preview}
-Category: ${label}
-`.trim();
-
-  const res = await withTimeout(
-    openai.chat.completions.create({
-      model: OPENAI_MODEL,
-      temperature: 0.4,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-    }),
-    AI_TIMEOUT_MS,
-    "reply generation"
-  );
-
-  const body = res.choices[0]?.message?.content?.trim() || "";
-  const finalBody = body || `Kia ora,\n\nThanks for your email about “${subject}”. We’ll be back with you shortly.`;
-  return signature ? `${finalBody}\n\n${signature}` : finalBody;
+function buildLogIdempotencyKey(threadId: string | null, msgId: string, settingsVersion: string) {
+  return `${threadId || "no-thread"}:${msgId}:${settingsVersion}`;
 }
 
 async function markRead(gmailClient: gmail_v1.Gmail, id: string) {
@@ -411,6 +348,7 @@ export async function POST(req: Request) {
     // 2) Settings (DB)
     const settings = await prisma.emailAISettings.findUnique({ where: { orgId } });
     if (!settings?.enabled) return json({ ok: false, error: "Email AI disabled for this org" }, 400);
+    const settingsVersion = settings.updatedAt ? settings.updatedAt.toISOString() : "unknown";
 
     const orgSettings = await prisma.orgSettings.findUnique({ where: { orgId }, select: { data: true } });
     orgSettingsData = (orgSettings?.data as Record<string, unknown>) || {};
@@ -462,6 +400,8 @@ export async function POST(req: Request) {
 
     const emailSnippetsArr = Array.isArray((orgSettingsData as any).emailSnippets) ? ((orgSettingsData as any).emailSnippets as any[]) : [];
     const snippets = normalizeSnippets([...emailSnippetsArr, ...kbSnippets]);
+
+    const aiEnabled = hasOpenAI();
 
     // 3) Gmail client (no TS2451 redeclare: name is gmailClient)
     const gmailClient = await getGmailClient(session, req);
@@ -608,6 +548,7 @@ export async function POST(req: Request) {
 
     let sentCounter = sentToday;
     let totalSentCounter = totalSent;
+    const orgIdValue = orgId as string;
 
     const withinBusinessHours = (ms: number) => {
       if (!effectiveInboxSettings.businessHoursOnly) return true;
@@ -638,6 +579,21 @@ export async function POST(req: Request) {
     // Main work
     await runWithConcurrency(take, OPENAI_CONCURRENCY, async (c) => {
       try {
+        const idempotencyKey = buildLogIdempotencyKey(c.threadId, c.id, settingsVersion);
+        if (c.threadId) {
+          const recent = await prisma.emailAILog.findMany({
+            where: { orgId: orgIdValue, gmailThreadId: c.threadId },
+            orderBy: { createdAt: "desc" },
+            take: 5,
+            select: { rawMeta: true },
+          });
+          const dup = recent.some((r) => (r.rawMeta as any)?.idempotencyKey === idempotencyKey);
+          if (dup) {
+            skipped++;
+            return;
+          }
+        }
+
         const paused = Boolean(effectiveInboxSettings.automationPaused);
         const blocked = c.risk === "blocked";
         const hasRecipient = Boolean(c.replyTo && c.replyTo.trim());
@@ -655,29 +611,49 @@ export async function POST(req: Request) {
           sentCounter < effectiveInboxSettings.dailySendCap &&
           totalSentCounter >= effectiveInboxSettings.requireApprovalForFirstN;
 
-        const shouldGenerate = !paused && !blocked && (effectiveInboxSettings.enableAutoDraft || autoSendEligible);
+        const shouldGenerate =
+          aiEnabled && !paused && !blocked && (effectiveInboxSettings.enableAutoDraft || autoSendEligible);
 
-        const preview = `From ${c.from.split("<")[0]?.trim().replace(/["']/g, "") || "there"}: ${c.snippet}`;
         const matched = shouldGenerate ? pickSnippets(snippets, `${c.subject} ${c.snippet} ${JSON.stringify(c.threadPeek || [])}`) : [];
 
-        const suggestedBody = shouldGenerate
-          ? await generateReplyBody({
-              businessName: safeStr(settings.businessName || "your business", "your business"),
-              defaultTone: voiceTone,
-              instructionPrompt,
-              signature: voiceSignature,
-              subject: c.subject,
-              preview,
-              label: c.label,
-              snippets: matched,
-            })
-          : "";
+        let suggestedBody = "";
+        let suggestedSubject = c.subject.toLowerCase().startsWith("re:") ? c.subject : `Re: ${c.subject}`;
+        let aiError: string | null = null;
+        let aiMeta: Record<string, unknown> | null = null;
+
+        if (shouldGenerate) {
+          try {
+            const reply = await withTimeout(
+              generateEmailReply({
+                businessName: safeStr(settings.businessName || "your business", "your business"),
+                tone: voiceTone,
+                instructionPrompt,
+                signature: voiceSignature,
+                subject: c.subject,
+                from: c.from,
+                snippet: c.snippet,
+                label: c.label,
+                threadPeek: c.threadPeek,
+                snippets: matched,
+              }),
+              AI_TIMEOUT_MS,
+              "reply generation"
+            );
+            suggestedBody = reply.body;
+            suggestedSubject = reply.subject;
+            aiMeta = reply.meta;
+          } catch (err: any) {
+            aiError = err?.message || "AI reply generation failed";
+          }
+        } else if (!aiEnabled) {
+          aiError = "AI disabled: missing OPENAI_API_KEY";
+        }
 
         const hasForbidden =
           !!suggestedBody &&
           forbidden.some((phrase) => phrase && suggestedBody.toLowerCase().includes(String(phrase).toLowerCase()));
 
-        const autoSendAllowed = autoSendEligible && !hasForbidden;
+        const autoSendAllowed = autoSendEligible && !hasForbidden && !aiError;
 
         // hygiene
         await markRead(gmailClient, c.id);
@@ -695,7 +671,17 @@ export async function POST(req: Request) {
             subject: c.subject,
             snippet: c.snippet,
             action,
-            reason: blocked ? "blocked" : autoSendAllowed ? "auto_send_candidate" : shouldGenerate ? "suggested_internal" : "queued",
+            reason: blocked
+              ? "blocked"
+              : aiError
+                ? aiError === "AI disabled: missing OPENAI_API_KEY"
+                  ? "ai_disabled_missing_key"
+                  : "ai_error"
+                : autoSendAllowed
+                  ? "auto_send_candidate"
+                  : shouldGenerate
+                    ? "suggested_internal"
+                    : "queued",
             createdAt: new Date(Number.isFinite(c.receivedMs) ? c.receivedMs : Date.now()),
             rawMeta: {
               from: c.from,
@@ -703,8 +689,9 @@ export async function POST(req: Request) {
               emailEpochMs: c.receivedMs,
               threadPeek: c.threadPeek,
               draftId: null,
-              suggested: shouldGenerate
-                ? { subject: c.subject.toLowerCase().startsWith("re:") ? c.subject : `Re: ${c.subject}`, body: suggestedBody }
+              idempotencyKey,
+              suggested: suggestedBody
+                ? { subject: suggestedSubject, body: suggestedBody, model: aiMeta?.model || null, createdAt: Date.now() }
                 : null,
               ai: {
                 category: c.label,
@@ -715,24 +702,26 @@ export async function POST(req: Request) {
                 autoSendEligible: autoSendAllowed,
                 blockedByForbidden: hasForbidden,
                 usedSnippets: matched.map((s) => s.title),
+                error: aiError,
               },
+              aiError,
             } as any,
           },
         });
 
-        if (autoSendAllowed) {
+        if (autoSendAllowed && suggestedBody) {
           // fire-and-forget send (best-effort)
           const origin = new URL(req.url).origin;
           await fetch(`${origin}/api/email-ai/send`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ logId: log.id, subject: log.subject, body: suggestedBody }),
+            body: JSON.stringify({ logId: log.id, subject: suggestedSubject, body: suggestedBody }),
           }).catch(() => {});
           sentCounter += 1;
           totalSentCounter += 1;
         }
 
-        if (shouldGenerate) drafted++;
+        if (suggestedBody) drafted++;
       } catch {
         skipped++;
       }

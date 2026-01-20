@@ -27,8 +27,8 @@ function msFromDate(d?: Date | null) {
   return d ? d.getTime() : 0;
 }
 
-export function buildGoogleAuthUrl(state: string) {
-  return buildAuthUrl({ scopes: GOOGLE_SCOPES, state });
+export function buildGoogleAuthUrl(state: string, redirectUrl?: string) {
+  return buildAuthUrl({ scopes: GOOGLE_SCOPES, state, redirectUrl });
 }
 
 async function refreshAccessToken(connection: CalendarConnectionRow) {

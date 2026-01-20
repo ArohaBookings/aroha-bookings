@@ -189,8 +189,14 @@ function isAbortResponse(res: Response, data: unknown) {
   return typeof error === "string" && error.toLowerCase() === "aborted";
 }
 
+function sanitizeErrorMessage(raw: unknown, fallback: string) {
+  if (typeof raw !== "string" || !raw.trim()) return fallback;
+  if (/trace|traceid|request id|diagnostic/i.test(raw)) return fallback;
+  return raw;
+}
+
 function buildSyncError(data: any, fallback: string) {
-  const message = typeof data?.error === "string" ? data.error : fallback;
+  const message = sanitizeErrorMessage(data?.error, fallback);
   return { message };
 }
 
@@ -416,7 +422,7 @@ export default function CallsAnalyticsClient({
       } catch (e: any) {
         if (e?.name !== "AbortError") {
           safeSet(() => {
-            setError(e?.message || "Failed to load calls");
+            setError(sanitizeErrorMessage(e?.message, "Failed to load calls"));
             setPollDelay((prev) => Math.min(prev * 2, 60000));
           });
         }
@@ -450,7 +456,7 @@ export default function CallsAnalyticsClient({
       safeSet(() => setDetail(data.call as CallDetail));
     } catch (e: any) {
       if (e?.name === "AbortError") return;
-      toast.show(e?.message || "Failed to load call detail", "error");
+      toast.show(sanitizeErrorMessage(e?.message, "Failed to load call detail"), "error");
     } finally {
       if (isMountedRef.current && detailRequestRef.current === requestId) {
         safeSet(() => setDetailLoading(false));
@@ -470,7 +476,7 @@ export default function CallsAnalyticsClient({
       const data = (await res.json().catch(() => ({}))) as StatsApiResponse;
       if (isAbortResponse(res, data)) return;
       if (!res.ok || (data && (data as any).ok === false)) {
-        throw new Error((data as any).error || "Failed to load stats");
+        throw new Error(sanitizeErrorMessage((data as any).error, "Failed to load stats"));
       }
       if (!isMountedRef.current || statsRequestRef.current !== requestId) return;
       safeSet(() => {
@@ -480,7 +486,7 @@ export default function CallsAnalyticsClient({
       });
     } catch (e: any) {
       if (e?.name !== "AbortError") {
-        toast.show(e?.message || "Failed to load stats", "error");
+        toast.show(sanitizeErrorMessage(e?.message, "Failed to load stats"), "error");
       }
     } finally {
       if (isMountedRef.current && statsRequestRef.current === requestId) {
@@ -544,7 +550,7 @@ export default function CallsAnalyticsClient({
         schedule(4 * 60 * 1000);
       } catch (err: any) {
         if (err?.name === "AbortError") return;
-        safeSet(() => setSyncError({ message: err?.message || "Sync failed" }));
+        safeSet(() => setSyncError({ message: sanitizeErrorMessage(err?.message, "Sync failed") }));
         const idx = Math.min(syncBackoffRef.current + 1, backoffSteps.length - 1);
         syncBackoffRef.current = idx;
         schedule(backoffSteps[idx]);
@@ -578,7 +584,7 @@ export default function CallsAnalyticsClient({
       await loadCalls({ silent: true });
     } catch (e: any) {
       if (e?.name === "AbortError") return;
-      toast.show(e?.message || "Sync failed", "error");
+      toast.show(sanitizeErrorMessage(e?.message, "Sync failed"), "error");
     } finally {
       safeSet(() => setManualSyncing(false));
     }
@@ -978,9 +984,18 @@ React.useEffect(() => {
     if (!Number.isFinite(lastTs)) return true;
     return nowTick - lastTs > 10 * 60 * 1000;
   }, [lastWebhookEffective, nowTick]);
+  const syncUnavailable = view === "inbox" && (!lastWebhookEffective || Boolean(syncError));
 
   const inboxView = (
     <div className="space-y-6">
+      {syncUnavailable && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm">
+          <div className="font-semibold">Analytics (Beta) — Sync temporarily unavailable. Data may be delayed.</div>
+          <div className="mt-1 text-xs text-amber-800">
+            Feature coming soon / may be incomplete while we polish.
+          </div>
+        </div>
+      )}
       <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-end gap-3">
           <div className="grid gap-1">

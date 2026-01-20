@@ -141,7 +141,7 @@ export default function CalendarConnectPage() {
               setBusy(true);
               setNotice(null);
               try {
-                const res = await fetch("/api/integrations/google/disconnect", {
+                const res = await fetch("/api/org/integrations/google-calendar/disconnect", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ orgId: probe.orgId, accountEmail: probe.email ?? null }),
